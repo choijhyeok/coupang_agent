@@ -86,6 +86,16 @@ class TelegramIntakeTests(unittest.TestCase):
 
         self.assertIn("상품명", str(context.exception))
 
+    def test_parse_message_rejects_trailing_connector(self) -> None:
+        with self.assertRaises(TelegramIntakeError) as context:
+            self.service.parse_message(
+                user_id="telegram:6",
+                chat_id="chat-6",
+                text="생수 그리고 담아줘",
+            )
+
+        self.assertIn("연결어", str(context.exception))
+
     def test_handle_update_converts_telegram_payload_into_request(self) -> None:
         result = self.service.handle_update(
             {

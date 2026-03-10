@@ -100,6 +100,7 @@ class TelegramPollingIntakeService:
         re.compile(r"예산\s*(?P<price>\d[\d,]*)\s*원"),
     )
     _SUFFIX_PATTERN = re.compile(r"(?:장바구니에\s*)?담아줘[.!?~ ]*$")
+    _TRAILING_SEPARATOR_PATTERN = re.compile(r"(?:\n|;|,|\s그리고)\s*$")
     _CONSTRAINT_MARKERS = ("옵션", "조건")
 
     def __init__(self, client: TelegramBotApiClient | None = None) -> None:
@@ -191,6 +192,8 @@ class TelegramPollingIntakeService:
         core = re.sub(r"^(장바구니에\s*)", "", core).strip()
         if not core:
             raise TelegramIntakeError("상품명을 포함해서 요청해주세요.")
+        if self._TRAILING_SEPARATOR_PATTERN.search(core):
+            raise TelegramIntakeError("마지막 상품명 뒤에는 연결어 없이 요청을 끝내주세요.")
         return core
 
     def _split_item_fragments(self, text: str) -> list[str]:
