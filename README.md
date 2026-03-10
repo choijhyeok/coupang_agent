@@ -12,11 +12,13 @@ Shared foundation for a Telegram-driven Coupang cart agent. This issue establish
 │   ├── cli.py
 │   ├── config.py
 │   ├── contracts.py
+│   ├── selection.py
 │   └── services.py
 ├── main.py
 ├── pyproject.toml
 └── tests/
-    └── test_foundation.py
+    ├── test_foundation.py
+    └── test_selection.py
 ```
 
 ## Quick Start
@@ -101,6 +103,14 @@ These protocols intentionally separate intake, selection, cart automation, and n
   so downstream notification and integration layers can report exact outcomes without
   inferring them from free-form messages.
 
+## Selection Engine
+
+The product selection module lives in [`coupang_cart_agent/selection.py`](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-10/coupang_cart_agent/selection.py).
+It exposes a pure `select_best_product()` helper and a protocol-compatible
+`HeuristicProductSelectionService` that scores candidates by rating, review count,
+and relative price. The heuristic intentionally penalizes suspiciously cheap,
+low-confidence products so the selector does not naively choose the lowest price.
+
 ## Example Import
 
 ```python
@@ -127,4 +137,10 @@ missing-config proof that ignores inherited shell variables, use:
 
 ```bash
 env -i PATH="$PATH" HOME="$HOME" UV_CACHE_DIR=.uv-cache uv run python -m coupang_cart_agent check-config
+```
+
+Selection-specific validation:
+
+```bash
+uv run python -m unittest tests.test_selection
 ```
