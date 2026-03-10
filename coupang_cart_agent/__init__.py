@@ -1,8 +1,11 @@
 """Shared contracts and service interfaces for the Coupang cart agent."""
 
+from .cart_executor import CoupangCartExecutor, SessionCredentials
 from .config import AppConfig, ConfigError, load_config
 from .contracts import (
+    CartAddFailureReason,
     CartAddResult,
+    CartAddStage,
     NotificationPayload,
     ProductCandidate,
     RequestedItem,
@@ -27,13 +30,17 @@ from .notifications import (
 
 __all__ = [
     "AppConfig",
+    "CartAddFailureReason",
     "CartAddResult",
+    "CartAddStage",
     "ConfigError",
+    "CoupangCartExecutor",
     "NotificationPayload",
     "NotificationDeliveryError",
     "ProductCandidate",
     "RequestedItem",
     "RetryingNotificationService",
+    "SessionCredentials",
     "SelectedProduct",
     "ShoppingRequest",
     "build_failure_notification_payload",

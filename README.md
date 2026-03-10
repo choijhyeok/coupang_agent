@@ -78,11 +78,11 @@ The following contracts are fixed by this foundation issue and should be consume
 - `CartAddResult`: output of the Coupang cart automation stage.
 - `NotificationPayload`: normalized Telegram notification message content.
 
-See [`coupang_cart_agent/contracts.py`](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-7/coupang_cart_agent/contracts.py) for field-level definitions.
+See [`coupang_cart_agent/contracts.py`](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-10/coupang_cart_agent/contracts.py) for field-level definitions.
 
 ## Service Interfaces
 
-Downstream modules should implement the protocols in [`coupang_cart_agent/services.py`](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-7/coupang_cart_agent/services.py):
+Downstream modules should implement the protocols in [`coupang_cart_agent/services.py`](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-10/coupang_cart_agent/services.py):
 
 - `TelegramIntakeService`
 - `ProductSelectionService`
@@ -91,9 +91,22 @@ Downstream modules should implement the protocols in [`coupang_cart_agent/servic
 
 These protocols intentionally separate intake, selection, cart automation, and notification so parallel branches can implement each module independently.
 
+## Cart Automation Module
+
+`HOW-10` adds a production-shaped cart executor in
+[`coupang_cart_agent/cart_executor.py`](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-10/coupang_cart_agent/cart_executor.py).
+
+- `CoupangCartExecutor` consumes existing `SelectedProduct` inputs and returns `CartAddResult`.
+- The executor stops at add-to-cart and classifies these failures explicitly:
+  `login_failed`, `out_of_stock`, `option_mismatch`, `ui_element_not_found`,
+  `checkout_attempted`, and `unknown`.
+- `CartAddResult` now includes stage, failure reason, pre/post cart counts, and evidence
+  so downstream notification and integration layers can report exact outcomes without
+  inferring them from free-form messages.
+
 ## Selection Engine
 
-The product selection module lives in [`coupang_cart_agent/selection.py`](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-9/coupang_cart_agent/selection.py).
+The product selection module lives in [`coupang_cart_agent/selection.py`](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-10/coupang_cart_agent/selection.py).
 It exposes a pure `select_best_product()` helper and a protocol-compatible
 `HeuristicProductSelectionService` that scores candidates by rating, review count,
 and relative price. The heuristic intentionally penalizes suspiciously cheap,

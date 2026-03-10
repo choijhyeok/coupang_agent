@@ -2,6 +2,27 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
+from enum import StrEnum
+
+
+class CartAddStage(StrEnum):
+    """Execution stage reached by the cart automation."""
+
+    SESSION = "session"
+    PRODUCT_PAGE = "product_page"
+    OPTION_SELECTION = "option_selection"
+    ADD_TO_CART = "add_to_cart"
+
+
+class CartAddFailureReason(StrEnum):
+    """Classified failure reasons required by the cart automation module."""
+
+    LOGIN_FAILED = "login_failed"
+    OUT_OF_STOCK = "out_of_stock"
+    OPTION_MISMATCH = "option_mismatch"
+    UI_ELEMENT_NOT_FOUND = "ui_element_not_found"
+    CHECKOUT_ATTEMPTED = "checkout_attempted"
+    UNKNOWN = "unknown"
 
 
 @dataclass(slots=True)
@@ -58,7 +79,13 @@ class CartAddResult:
     success: bool
     cart_item_id: str | None
     selected_product: SelectedProduct
+    stage: CartAddStage
     message: str
+    failure_reason: CartAddFailureReason | None = None
+    cart_count_before: int | None = None
+    cart_count_after: int | None = None
+    checkout_attempted: bool = False
+    evidence: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -107,7 +134,14 @@ def demo_contract_payload() -> dict[str, object]:
         success=True,
         cart_item_id="cart-item-42",
         selected_product=selected,
+        stage=CartAddStage.ADD_TO_CART,
         message="Item added to cart.",
+        cart_count_before=1,
+        cart_count_after=2,
+        evidence={
+            "session_mode": "existing_session",
+            "product_url": candidate.product_url,
+        },
     )
     notification = NotificationPayload(
         chat_id=request.chat_id,

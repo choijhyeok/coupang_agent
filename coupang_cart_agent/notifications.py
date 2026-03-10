@@ -27,7 +27,7 @@ def build_success_notification_payload(
     return NotificationPayload(
         chat_id=chat_id,
         success=True,
-        stage="notify_success",
+        stage=str(cart_results[-1].stage),
         summary=summary,
         details={
             "products": products,

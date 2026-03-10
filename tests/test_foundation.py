@@ -6,9 +6,26 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
+from coupang_cart_agent.cart_executor import (
+    CartSnapshot,
+    CoupangCartExecutor,
+    LoginFailedError,
+    OptionMismatchError,
+    OutOfStockError,
+    SessionCredentials,
+    UIElementNotFoundError,
+)
 from coupang_cart_agent.cli import main
 from coupang_cart_agent.config import ConfigError, load_config
-from coupang_cart_agent.contracts import RequestedItem, ShoppingRequest, demo_contract_payload
+from coupang_cart_agent.contracts import (
+    CartAddFailureReason,
+    CartAddStage,
+    ProductCandidate,
+    RequestedItem,
+    SelectedProduct,
+    ShoppingRequest,
+    demo_contract_payload,
+)
 
 
 class FoundationTests(unittest.TestCase):
@@ -103,6 +120,180 @@ class FoundationTests(unittest.TestCase):
         )
 
         self.assertEqual(request.items[0].name, "물 2L")
+
+
+class FakeCoupangPage:
+    def __init__(
+        self,
+        *,
+        session_mode: str = "existing_session",
+        before_count: int = 1,
+        after_count: int = 2,
+        add_to_cart_id: str = "cart-item-42",
+        checkout_started: bool = False,
+        failure: Exception | None = None,
+    ) -> None:
+        self.session_mode = session_mode
+        self.before_count = before_count
+        self.after_count = after_count
+        self.add_to_cart_id = add_to_cart_id
+        self._checkout_started = checkout_started
+        self.failure = failure
+        self.calls: list[str] = []
+
+    def ensure_session(self, credentials: SessionCredentials) -> str:
+        self.calls.append("ensure_session")
+        self._raise_if(LoginFailedError)
+        return self.session_mode
+
+    def open_product(self, product_url: str) -> None:
+        self.calls.append(f"open_product:{product_url}")
+        self._raise_if(UIElementNotFoundError, stage="open_product")
+
+    def assert_in_stock(self) -> None:
+        self.calls.append("assert_in_stock")
+        self._raise_if(OutOfStockError)
+
+    def select_options(self, selection: SelectedProduct) -> dict[str, str]:
+        self.calls.append("select_options")
+        self._raise_if(OptionMismatchError)
+        self._raise_if(UIElementNotFoundError, stage="select_options")
+        return {"size": "355ml", "pack": "24"}
+
+    def cart_snapshot(self) -> CartSnapshot:
+        self.calls.append("cart_snapshot")
+        if self.calls.count("cart_snapshot") == 1:
+            return CartSnapshot(item_count=self.before_count, summary="before")
+        return CartSnapshot(item_count=self.after_count, summary="after")
+
+    def add_to_cart(self) -> str:
+        self.calls.append("add_to_cart")
+        self._raise_if(UIElementNotFoundError, stage="add_to_cart")
+        return self.add_to_cart_id
+
+    def checkout_started(self) -> bool:
+        self.calls.append("checkout_started")
+        return self._checkout_started
+
+    def _raise_if(self, error_type: type[Exception], *, stage: str | None = None) -> None:
+        if isinstance(self.failure, error_type):
+            if stage is None or getattr(self.failure, "stage", stage) == stage:
+                raise self.failure
+
+
+class CartExecutorTests(unittest.TestCase):
+    def setUp(self) -> None:
+        candidate = ProductCandidate(
+            product_id="CP-1001",
+            name="Coca-Cola Zero 355ml x 24",
+            price_krw=16900,
+            rating=4.8,
+            review_count=12431,
+            product_url="https://www.coupang.com/vp/products/CP-1001",
+            vendor="Coupang",
+            badges=["Rocket Delivery"],
+        )
+        self.selection = SelectedProduct(
+            request_item_name="Coke Zero 355ml",
+            candidate=candidate,
+            quantity=1,
+            selection_reason="Strong review signal with acceptable price.",
+            score=9.2,
+        )
+        self.credentials = SessionCredentials(
+            username="buyer@example.com",
+            password="super-secret-password",
+        )
+
+    def test_add_products_success_captures_pre_and_post_cart_state(self) -> None:
+        page = FakeCoupangPage(before_count=3, after_count=4)
+        executor = CoupangCartExecutor(page=page, credentials=self.credentials)
+
+        result = executor.add_products([self.selection])[0]
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.stage, CartAddStage.ADD_TO_CART)
+        self.assertIsNone(result.failure_reason)
+        self.assertEqual(result.cart_count_before, 3)
+        self.assertEqual(result.cart_count_after, 4)
+        self.assertFalse(result.checkout_attempted)
+        self.assertEqual(result.evidence["session_mode"], "existing_session")
+        self.assertEqual(
+            page.calls,
+            [
+                "ensure_session",
+                f"open_product:{self.selection.candidate.product_url}",
+                "assert_in_stock",
+                "select_options",
+                "cart_snapshot",
+                "add_to_cart",
+                "cart_snapshot",
+                "checkout_started",
+            ],
+        )
+
+    def test_add_products_classifies_failures(self) -> None:
+        scenarios = [
+            (
+                "login",
+                LoginFailedError("Login failed for configured Coupang account."),
+                CartAddFailureReason.LOGIN_FAILED,
+                CartAddStage.SESSION,
+            ),
+            (
+                "out_of_stock",
+                OutOfStockError("Selected product is sold out."),
+                CartAddFailureReason.OUT_OF_STOCK,
+                CartAddStage.PRODUCT_PAGE,
+            ),
+            (
+                "option_mismatch",
+                OptionMismatchError("Requested option values do not exist on the page."),
+                CartAddFailureReason.OPTION_MISMATCH,
+                CartAddStage.OPTION_SELECTION,
+            ),
+            (
+                "ui_missing",
+                UIElementNotFoundError("Add-to-cart button not found."),
+                CartAddFailureReason.UI_ELEMENT_NOT_FOUND,
+                CartAddStage.PRODUCT_PAGE,
+            ),
+        ]
+        for name, failure, expected_reason, expected_stage in scenarios:
+            with self.subTest(name=name):
+                page = FakeCoupangPage(failure=failure)
+                executor = CoupangCartExecutor(page=page, credentials=self.credentials)
+
+                result = executor.add_products([self.selection])[0]
+
+                self.assertFalse(result.success)
+                self.assertEqual(result.failure_reason, expected_reason)
+                self.assertEqual(result.stage, expected_stage)
+
+    def test_executor_redacts_credentials_in_audit_log(self) -> None:
+        page = FakeCoupangPage(session_mode="restored session for buyer@example.com")
+        executor = CoupangCartExecutor(page=page, credentials=self.credentials)
+
+        executor.add_products([self.selection])
+
+        rendered_entries = [
+            f"{entry.message} {entry.metadata}"
+            for entry in executor.audit_log()
+        ]
+        joined = "\n".join(rendered_entries)
+        self.assertNotIn(self.credentials.username, joined)
+        self.assertNotIn(self.credentials.password, joined)
+        self.assertIn("***", joined)
+
+    def test_executor_stops_when_checkout_starts(self) -> None:
+        page = FakeCoupangPage(checkout_started=True)
+        executor = CoupangCartExecutor(page=page, credentials=self.credentials)
+
+        result = executor.add_products([self.selection])[0]
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.failure_reason, CartAddFailureReason.CHECKOUT_ATTEMPTED)
+        self.assertTrue(result.checkout_attempted)
 
 
 if __name__ == "__main__":

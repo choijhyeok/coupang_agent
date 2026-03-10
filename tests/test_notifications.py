@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import unittest
 
-from coupang_cart_agent.contracts import CartAddResult, ProductCandidate, SelectedProduct
+from coupang_cart_agent.contracts import (
+    CartAddResult,
+    CartAddStage,
+    ProductCandidate,
+    SelectedProduct,
+)
 from coupang_cart_agent.notifications import (
     NotificationDeliveryError,
     RetryingNotificationService,
@@ -37,6 +42,7 @@ def cart_result(
         success=True,
         cart_item_id=f"cart-{product_id}",
         selected_product=selected_product,
+        stage=CartAddStage.ADD_TO_CART,
         message="Item added to cart.",
     )
 
@@ -64,7 +70,7 @@ class NotificationTests(unittest.TestCase):
         message = format_notification_message(payload)
 
         self.assertTrue(payload.success)
-        self.assertEqual(payload.stage, "notify_success")
+        self.assertEqual(payload.stage, CartAddStage.ADD_TO_CART.value)
         self.assertEqual(payload.details["cart_item_count"], 2)
         self.assertIn("코카콜라 제로 355ml x 24 / 16,900원 / 2개", message)
         self.assertIn("삼다수 2L x 6 / 6,900원 / 1개", message)
