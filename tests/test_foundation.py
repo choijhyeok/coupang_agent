@@ -111,6 +111,42 @@ class FoundationTests(unittest.TestCase):
         self.assertEqual(stdout.getvalue(), "")
         self.assertIn("Missing required configuration", stderr.getvalue())
 
+    def test_cli_integration_demo_success_runs_end_to_end_proof(self) -> None:
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            exit_code = main(
+                [
+                    "integration-demo",
+                    "콜라 제로 2개 담아줘",
+                    "--scenario",
+                    "success",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        output = stdout.getvalue()
+        self.assertIn('"success": true', output)
+        self.assertIn('"delivered_messages"', output)
+        self.assertIn("장바구니 담기를 완료했습니다.", output)
+
+    def test_cli_integration_demo_failure_reports_failure_notification(self) -> None:
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            exit_code = main(
+                [
+                    "integration-demo",
+                    "삼다수 1박스 담아줘",
+                    "--scenario",
+                    "cart-failure",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        output = stdout.getvalue()
+        self.assertIn('"success": false', output)
+        self.assertIn('"failed_stage": "product_page"', output)
+        self.assertIn("장바구니 담기에 실패했습니다.", output)
+
     def test_contract_import_example(self) -> None:
         request = ShoppingRequest(
             user_id="telegram:1",
