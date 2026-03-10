@@ -1,6 +1,6 @@
 # Coupang Cart Agent
 
-Shared foundation for a Telegram-driven Coupang cart agent. This issue establishes the package layout, shared contracts, configuration loading, and service interfaces that downstream feature branches must consume without redesigning.
+Shared modules for a Telegram-driven Coupang cart agent. The repository is organized so intake, selection, cart automation, notifications, and integration can evolve on separate branches without redesigning shared contracts.
 
 ## Project Layout
 
@@ -9,17 +9,20 @@ Shared foundation for a Telegram-driven Coupang cart agent. This issue establish
 ├── coupang_cart_agent/
 │   ├── __init__.py
 │   ├── __main__.py
+│   ├── cart_executor.py
 │   ├── cli.py
 │   ├── config.py
 │   ├── contracts.py
 │   ├── notifications.py
 │   ├── selection.py
-│   └── services.py
+│   ├── services.py
+│   └── telegram_intake.py
 ├── main.py
 ├── pyproject.toml
 └── tests/
     ├── test_foundation.py
-    └── test_selection.py
+    ├── test_selection.py
+    └── test_telegram_intake.py
 ```
 
 ## Quick Start
@@ -50,87 +53,69 @@ Shared foundation for a Telegram-driven Coupang cart agent. This issue establish
    env -i PATH="$PATH" HOME="$HOME" UV_CACHE_DIR=.uv-cache uv run python -m coupang_cart_agent check-config
    ```
 
-   This runs the check in a clean environment so missing required variables are reported
-   deterministically instead of being satisfied by inherited shell variables.
-
 ## Commands
 
 - `uv run python -m coupang_cart_agent contracts-example`
   Prints a sample request, selected product, cart result, and notification payload.
 - `uv run python -m coupang_cart_agent check-config`
   Validates required environment variables and prints a clear error when config is incomplete.
-  For a deterministic missing-config check, prefer:
-
-  ```bash
-  env -i PATH="$PATH" HOME="$HOME" UV_CACHE_DIR=.uv-cache uv run python -m coupang_cart_agent check-config
-  ```
+- `uv run python -m coupang_cart_agent parse-telegram-message "콜라 제로 2개 담아줘"`
+  Parses a Telegram-style shopping request into the shared `ShoppingRequest` contract.
+- `uv run python -m coupang_cart_agent poll-telegram-once --timeout 1`
+  Uses Telegram Bot API long polling once and prints parsed requests or user-facing errors.
 - `uv run python main.py contracts-example`
   Root entrypoint wrapper for local execution.
 
 ## Shared Contracts
 
-The following contracts are fixed by this foundation issue and should be consumed by downstream work:
+The following contracts are shared across modules:
 
-- `RequestedItem`: one requested product with quantity and optional constraints.
-- `ShoppingRequest`: Telegram/user-originated request containing multiple requested items.
-- `ProductCandidate`: scraped or retrieved candidate product before final selection.
-- `SelectedProduct`: chosen product with the rationale used for selection.
-- `CartAddResult`: output of the Coupang cart automation stage.
-- `NotificationPayload`: normalized Telegram notification message content.
+- `RequestedItem`
+- `ShoppingRequest`
+- `ProductCandidate`
+- `SelectedProduct`
+- `CartAddResult`
+- `NotificationPayload`
 
-See [`coupang_cart_agent/contracts.py`](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-10/coupang_cart_agent/contracts.py) for field-level definitions.
+See [`coupang_cart_agent/contracts.py`](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-8/coupang_cart_agent/contracts.py) for field-level definitions.
 
 ## Service Interfaces
 
-Downstream modules should implement the protocols in [`coupang_cart_agent/services.py`](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-10/coupang_cart_agent/services.py):
+Downstream modules should implement the protocols in [`coupang_cart_agent/services.py`](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-8/coupang_cart_agent/services.py):
 
 - `TelegramIntakeService`
 - `ProductSelectionService`
 - `CoupangCartService`
 - `NotificationService`
 
-These protocols intentionally separate intake, selection, cart automation, and notification so parallel branches can implement each module independently.
+## Telegram Intake
 
-## Cart Automation Module
+[`coupang_cart_agent/telegram_intake.py`](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-8/coupang_cart_agent/telegram_intake.py) provides a production-shaped intake implementation for HOW-8.
 
-`HOW-10` adds a production-shaped cart executor in
-[`coupang_cart_agent/cart_executor.py`](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-10/coupang_cart_agent/cart_executor.py).
+- `TelegramBotApiClient`: minimal Telegram Bot API client using long polling.
+- `TelegramPollingIntakeService`: extracts Telegram updates, parses `... 담아줘` messages, and returns `ShoppingRequest` or a concise error response.
 
-- `CoupangCartExecutor` consumes existing `SelectedProduct` inputs and returns `CartAddResult`.
-- The executor stops at add-to-cart and classifies these failures explicitly:
-  `login_failed`, `out_of_stock`, `option_mismatch`, `ui_element_not_found`,
-  `checkout_attempted`, and `unknown`.
-- `CartAddResult` now includes stage, failure reason, pre/post cart counts, and evidence
-  so downstream notification and integration layers can report exact outcomes without
-  inferring them from free-form messages.
+Supported parsing rules:
+
+- quantity units such as `개`, `병`, `팩`, `박스`
+- optional constraints through parentheses or `옵션:` / `조건:`
+- optional price cap such as `20000원 이하`
+- multiple requested items separated by newlines, `;`, or `그리고`
 
 ## Selection Engine
 
-The product selection module lives in [`coupang_cart_agent/selection.py`](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-10/coupang_cart_agent/selection.py).
-It exposes a pure `select_best_product()` helper and a protocol-compatible
-`HeuristicProductSelectionService` that scores candidates by rating, review count,
-and relative price. The heuristic intentionally penalizes suspiciously cheap,
-low-confidence products so the selector does not naively choose the lowest price.
+[`coupang_cart_agent/selection.py`](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-8/coupang_cart_agent/selection.py) exposes a pure `select_best_product()` helper and a protocol-compatible `HeuristicProductSelectionService` that scores candidates by rating, review count, and relative price.
 
 ## Notifications
 
-The telegram notification module lives in [`coupang_cart_agent/notifications.py`](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-11/coupang_cart_agent/notifications.py).
+The telegram notification module lives in [`coupang_cart_agent/notifications.py`](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-8/coupang_cart_agent/notifications.py).
 It exposes payload builders aligned with `NotificationPayload`, a bounded
 formatter for concise success and failure messages, and a retrying sender adapter
 for transient delivery failures.
 
-## Example Import
+## Cart Automation Module
 
-```python
-from coupang_cart_agent.contracts import RequestedItem, ShoppingRequest
-
-request = ShoppingRequest(
-    user_id="telegram:1234",
-    chat_id="1234",
-    items=[RequestedItem(name="Coke Zero 355ml", quantity=2)],
-    raw_text="콜라 제로 355ml 2개 담아줘",
-)
-```
+[`coupang_cart_agent/cart_executor.py`](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-8/coupang_cart_agent/cart_executor.py) consumes `SelectedProduct` inputs and returns `CartAddResult` while stopping at add-to-cart.
 
 ## Validation
 
@@ -140,16 +125,10 @@ Run:
 uv run python -m unittest discover -s tests
 ```
 
-The tests cover the shared contract example and the missing-config error path. For a manual
-missing-config proof that ignores inherited shell variables, use:
+Additional module proofs:
 
 ```bash
-env -i PATH="$PATH" HOME="$HOME" UV_CACHE_DIR=.uv-cache uv run python -m coupang_cart_agent check-config
-```
-
-Selection-specific validation:
-
-```bash
+uv run python -m coupang_cart_agent parse-telegram-message "삼다수 2L 1박스 옵션: 무라벨 담아줘"
 uv run python -m unittest tests.test_selection
 ```
 
