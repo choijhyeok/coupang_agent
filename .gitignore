@@ -1,0 +1,10 @@
+.env
+.venv
+.uv-cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.coverage
+dist/
+build/
