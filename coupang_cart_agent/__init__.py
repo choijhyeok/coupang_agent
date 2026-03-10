@@ -19,6 +19,13 @@ from .selection import (
     select_best_product,
     summarize_selection_reason,
 )
+from .telegram_intake import (
+    TelegramBotApiClient,
+    TelegramInboundMessage,
+    TelegramIntakeError,
+    TelegramIntakeResult,
+    TelegramPollingIntakeService,
+)
 
 __all__ = [
     "AppConfig",
@@ -34,6 +41,11 @@ __all__ = [
     "SelectedProduct",
     "ShoppingRequest",
     "HeuristicProductSelectionService",
+    "TelegramBotApiClient",
+    "TelegramInboundMessage",
+    "TelegramIntakeError",
+    "TelegramIntakeResult",
+    "TelegramPollingIntakeService",
     "load_config",
     "normalize_candidate",
     "score_candidate",
