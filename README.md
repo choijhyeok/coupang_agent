@@ -12,6 +12,7 @@ Shared foundation for a Telegram-driven Coupang cart agent. This issue establish
 │   ├── cli.py
 │   ├── config.py
 │   ├── contracts.py
+│   ├── notifications.py
 │   ├── selection.py
 │   └── services.py
 ├── main.py
@@ -111,6 +112,13 @@ It exposes a pure `select_best_product()` helper and a protocol-compatible
 and relative price. The heuristic intentionally penalizes suspiciously cheap,
 low-confidence products so the selector does not naively choose the lowest price.
 
+## Notifications
+
+The telegram notification module lives in [`coupang_cart_agent/notifications.py`](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-11/coupang_cart_agent/notifications.py).
+It exposes payload builders aligned with `NotificationPayload`, a bounded
+formatter for concise success and failure messages, and a retrying sender adapter
+for transient delivery failures.
+
 ## Example Import
 
 ```python
@@ -143,4 +151,10 @@ Selection-specific validation:
 
 ```bash
 uv run python -m unittest tests.test_selection
+```
+
+Notification-specific validation:
+
+```bash
+uv run python -m unittest tests.test_notifications
 ```
