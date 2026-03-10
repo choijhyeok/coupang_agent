@@ -27,6 +27,13 @@ from .notifications import (
     format_notification_message,
     summarize_cart_results,
 )
+from .telegram_intake import (
+    TelegramBotApiClient,
+    TelegramInboundMessage,
+    TelegramIntakeError,
+    TelegramIntakeResult,
+    TelegramPollingIntakeService,
+)
 
 __all__ = [
     "AppConfig",
@@ -47,6 +54,11 @@ __all__ = [
     "build_success_notification_payload",
     "format_notification_message",
     "HeuristicProductSelectionService",
+    "TelegramBotApiClient",
+    "TelegramInboundMessage",
+    "TelegramIntakeError",
+    "TelegramIntakeResult",
+    "TelegramPollingIntakeService",
     "load_config",
     "normalize_candidate",
     "score_candidate",
