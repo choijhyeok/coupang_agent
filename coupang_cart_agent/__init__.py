@@ -27,6 +27,7 @@ from .notifications import (
     format_notification_message,
     summarize_cart_results,
 )
+from .integration import CoupangCartAgentFlow, IntegrationRunResult
 from .telegram_intake import (
     TelegramBotApiClient,
     TelegramInboundMessage,
@@ -42,11 +43,13 @@ __all__ = [
     "CartAddStage",
     "ConfigError",
     "CoupangCartExecutor",
+    "CoupangCartAgentFlow",
     "NotificationPayload",
     "NotificationDeliveryError",
     "ProductCandidate",
     "RequestedItem",
     "RetryingNotificationService",
+    "IntegrationRunResult",
     "SessionCredentials",
     "SelectedProduct",
     "ShoppingRequest",
