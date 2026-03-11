@@ -5,9 +5,11 @@ import json
 import sys
 from dataclasses import asdict
 
+from .cart_adapters import DemoCoupangCartPage, PlaywrightCoupangCartPage, PlaywrightCoupangSettings
+from .cart_persistence import SqliteCartResultStore
 from .config import ConfigError, load_config
 from .contracts import ProductCandidate, SelectedProduct
-from .cart_executor import CartSnapshot, CoupangCartExecutor, OutOfStockError, SessionCredentials
+from .cart_executor import CoupangCartExecutor, SessionCredentials
 from .integration import CoupangCartAgentFlow
 from .notifications import RetryingNotificationService
 from .selection import HeuristicProductSelectionService
@@ -37,6 +39,9 @@ def main(argv: list[str] | None = None) -> int:
                     "coupang_username": config.coupang_username,
                     "coupang_login_url": config.coupang_login_url,
                     "coupang_cart_url": config.coupang_cart_url,
+                    "coupang_browser_headless": config.coupang_browser_headless,
+                    "coupang_storage_state_path": config.coupang_storage_state_path,
+                    "cart_db_path": config.cart_db_path,
                     "default_currency": config.default_currency,
                 },
                 indent=2,
@@ -127,41 +132,12 @@ def main(argv: list[str] | None = None) -> int:
                 ]
             return candidates_by_item
 
-        class DemoPage:
-            def __init__(self, *, should_fail: bool) -> None:
-                self._should_fail = should_fail
-                self._snapshots = 0
-
-            def ensure_session(self, credentials: SessionCredentials) -> str:
-                return "existing_session"
-
-            def open_product(self, product_url: str) -> None:
-                return None
-
-            def assert_in_stock(self) -> None:
-                if self._should_fail:
-                    raise OutOfStockError("Selected product is sold out.")
-
-            def select_options(self, selection: SelectedProduct) -> dict[str, str]:
-                return {"quantity": str(selection.quantity)}
-
-            def cart_snapshot(self) -> CartSnapshot:
-                self._snapshots += 1
-                count = 0 if self._snapshots == 1 else 1
-                return CartSnapshot(item_count=count, summary=f"count={count}")
-
-            def add_to_cart(self) -> str:
-                return "cart-item-demo"
-
-            def checkout_started(self) -> bool:
-                return False
-
         flow = CoupangCartAgentFlow(
             intake_service=TelegramPollingIntakeService(),
             candidate_source=candidate_source,
             selection_service=HeuristicProductSelectionService(),
             cart_service=CoupangCartExecutor(
-                page=DemoPage(should_fail=parsed.scenario == "cart-failure"),
+                page=DemoCoupangCartPage(should_fail=parsed.scenario == "cart-failure"),
                 credentials=SessionCredentials(
                     username="demo-user",
                     password="demo-password",
@@ -187,9 +163,91 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
+    if command == "cart-live-add":
+        parser = argparse.ArgumentParser(prog="python -m coupang_cart_agent cart-live-add")
+        parser.add_argument("--product-url", required=True)
+        parser.add_argument("--product-id", required=True)
+        parser.add_argument("--name", required=True)
+        parser.add_argument("--request-item-name", default=None)
+        parser.add_argument("--quantity", type=int, default=1)
+        parser.add_argument("--price-krw", type=int, default=0)
+        parser.add_argument("--rating", type=float, default=0.0)
+        parser.add_argument("--review-count", type=int, default=0)
+        parser.add_argument("--vendor", default=None)
+        parser.add_argument("--option", action="append", default=[])
+        parser.add_argument("--db-path", default=None)
+        parser.add_argument("--headed", action="store_true")
+        parsed = parser.parse_args(args[1:])
+
+        try:
+            config = load_config()
+        except ConfigError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+
+        option_hints: dict[str, str] = {}
+        for raw in parsed.option:
+            if "=" not in raw:
+                print(f"Invalid --option value: {raw}. Expected key=value.", file=sys.stderr)
+                return 1
+            key, value = raw.split("=", 1)
+            option_hints[key.strip()] = value.strip()
+
+        selected = SelectedProduct(
+            request_item_name=parsed.request_item_name or parsed.name,
+            candidate=ProductCandidate(
+                product_id=parsed.product_id,
+                name=parsed.name,
+                price_krw=parsed.price_krw,
+                rating=parsed.rating,
+                review_count=parsed.review_count,
+                product_url=parsed.product_url,
+                vendor=parsed.vendor,
+            ),
+            quantity=parsed.quantity,
+            selection_reason="Manual live cart validation target.",
+            score=0.0,
+            option_hints=option_hints,
+        )
+        page = PlaywrightCoupangCartPage(
+            PlaywrightCoupangSettings(
+                login_url=config.coupang_login_url,
+                cart_url=config.coupang_cart_url,
+                headless=False if parsed.headed else config.coupang_browser_headless,
+                storage_state_path=config.coupang_storage_state_path,
+            )
+        )
+        executor = CoupangCartExecutor(
+            page=page,
+            credentials=SessionCredentials(
+                username=config.coupang_username,
+                password=config.coupang_password,
+            ),
+            result_store=SqliteCartResultStore(parsed.db_path or config.cart_db_path),
+        )
+
+        try:
+            result = executor.add_products([selected])[0]
+        finally:
+            page.close()
+
+        print(
+            json.dumps(
+                {
+                    "result": asdict(result),
+                    "audit_log": [asdict(entry) for entry in executor.audit_log()],
+                    "db_path": parsed.db_path or config.cart_db_path,
+                },
+                ensure_ascii=False,
+                indent=2,
+                default=str,
+            )
+        )
+        return 0
+
     print(
         "Usage: python -m coupang_cart_agent "
-        "[contracts-example|check-config|parse-telegram-message|poll-telegram-once|integration-demo]",
+        "[contracts-example|check-config|parse-telegram-message|poll-telegram-once|integration-demo|cart-live-add]",
         file=sys.stderr,
     )
     return 1

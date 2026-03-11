@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Protocol
 
+from .cart_persistence import CartResultStore, build_cart_result_record
 from .contracts import (
     CartAddFailureReason,
     CartAddResult,
@@ -72,9 +74,11 @@ class CoupangCartExecutor:
         *,
         page: CoupangCartPage,
         credentials: SessionCredentials,
+        result_store: CartResultStore | None = None,
     ) -> None:
         self._page = page
         self._credentials = credentials
+        self._result_store = result_store
         self._audit_entries: list[AuditEntry] = []
 
     def add_products(self, selections: list[SelectedProduct]) -> list[CartAddResult]:
@@ -127,7 +131,7 @@ class CoupangCartExecutor:
                     },
                 )
 
-            return CartAddResult(
+            result = CartAddResult(
                 success=True,
                 cart_item_id=cart_item_id,
                 selected_product=selection,
@@ -140,8 +144,13 @@ class CoupangCartExecutor:
                     "selected_options": selected_options,
                     "session_mode": session_mode,
                     "product_url": selection.candidate.product_url,
+                    "recorded_at": datetime.now(UTC).isoformat(),
+                    "cart_snapshot_before": before.summary,
+                    "cart_snapshot_after": after.summary,
                 },
             )
+            self._persist_result(result)
+            return result
         except LoginFailedError as exc:
             return self._failure_result(
                 selection,
@@ -196,7 +205,7 @@ class CoupangCartExecutor:
             failure_reason=failure_reason,
             checkout_attempted=checkout_attempted,
         )
-        return CartAddResult(
+        result = CartAddResult(
             success=False,
             cart_item_id=None,
             selected_product=selection,
@@ -208,6 +217,8 @@ class CoupangCartExecutor:
             checkout_attempted=checkout_attempted,
             evidence=evidence or {},
         )
+        self._persist_result(result)
+        return result
 
     def _audit(self, stage: CartAddStage, message: str, **metadata: object) -> None:
         self._audit_entries.append(
@@ -229,3 +240,8 @@ class CoupangCartExecutor:
         if isinstance(value, list):
             return [self._sanitize(item) for item in value]
         return value
+
+    def _persist_result(self, result: CartAddResult) -> None:
+        if self._result_store is None:
+            return
+        self._result_store.save(build_cart_result_record(result))

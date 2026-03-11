@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import io
+import os
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
+from coupang_cart_agent.cart_persistence import SqliteCartResultStore
 from coupang_cart_agent.cart_executor import (
     CartSnapshot,
     CoupangCartExecutor,
@@ -65,6 +68,9 @@ class FoundationTests(unittest.TestCase):
         self.assertEqual(config.telegram_bot_token, "test-token")
         self.assertEqual(config.coupang_username, "test-user")
         self.assertEqual(config.coupang_password, "test-password")
+        self.assertEqual(config.cart_db_path, ".data/cart_results.sqlite3")
+        self.assertTrue(config.coupang_browser_headless)
+        self.assertEqual(config.coupang_storage_state_path, ".data/coupang-storage-state.json")
 
     def test_load_config_prefers_explicit_env_over_dotenv(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -85,6 +91,9 @@ class FoundationTests(unittest.TestCase):
                     "TELEGRAM_BOT_TOKEN": "env-token",
                     "COUPANG_USERNAME": "env-user",
                     "COUPANG_PASSWORD": "env-password",
+                    "CART_DB_PATH": "/tmp/cart.sqlite3",
+                    "COUPANG_BROWSER_HEADLESS": "false",
+                    "COUPANG_STORAGE_STATE_PATH": "/tmp/coupang-state.json",
                 },
                 dotenv_path=dotenv_path,
             )
@@ -92,6 +101,9 @@ class FoundationTests(unittest.TestCase):
         self.assertEqual(config.telegram_bot_token, "env-token")
         self.assertEqual(config.coupang_username, "env-user")
         self.assertEqual(config.coupang_password, "env-password")
+        self.assertEqual(config.cart_db_path, "/tmp/cart.sqlite3")
+        self.assertFalse(config.coupang_browser_headless)
+        self.assertEqual(config.coupang_storage_state_path, "/tmp/coupang-state.json")
 
     def test_cli_contracts_example_runs(self) -> None:
         stdout = io.StringIO()
@@ -104,7 +116,15 @@ class FoundationTests(unittest.TestCase):
     def test_cli_check_config_reports_missing_values(self) -> None:
         stdout = io.StringIO()
         stderr = io.StringIO()
-        with redirect_stdout(stdout), redirect_stderr(stderr):
+        with patch.dict(
+            os.environ,
+            {
+                "TELEGRAM_BOT_TOKEN": "",
+                "COUPANG_USERNAME": "",
+                "COUPANG_PASSWORD": "",
+            },
+            clear=True,
+        ), redirect_stdout(stdout), redirect_stderr(stderr):
             exit_code = main(["check-config"])
 
         self.assertEqual(exit_code, 1)
@@ -242,31 +262,41 @@ class CartExecutorTests(unittest.TestCase):
         )
 
     def test_add_products_success_captures_pre_and_post_cart_state(self) -> None:
-        page = FakeCoupangPage(before_count=3, after_count=4)
-        executor = CoupangCartExecutor(page=page, credentials=self.credentials)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            store = SqliteCartResultStore(Path(tmp_dir) / "cart-results.sqlite3")
+            page = FakeCoupangPage(before_count=3, after_count=4)
+            executor = CoupangCartExecutor(
+                page=page,
+                credentials=self.credentials,
+                result_store=store,
+            )
 
-        result = executor.add_products([self.selection])[0]
+            result = executor.add_products([self.selection])[0]
+            persisted = store.fetch_all()
 
-        self.assertTrue(result.success)
-        self.assertEqual(result.stage, CartAddStage.ADD_TO_CART)
-        self.assertIsNone(result.failure_reason)
-        self.assertEqual(result.cart_count_before, 3)
-        self.assertEqual(result.cart_count_after, 4)
-        self.assertFalse(result.checkout_attempted)
-        self.assertEqual(result.evidence["session_mode"], "existing_session")
-        self.assertEqual(
-            page.calls,
-            [
-                "ensure_session",
-                f"open_product:{self.selection.candidate.product_url}",
-                "assert_in_stock",
-                "select_options",
-                "cart_snapshot",
-                "add_to_cart",
-                "cart_snapshot",
-                "checkout_started",
-            ],
-        )
+            self.assertTrue(result.success)
+            self.assertEqual(result.stage, CartAddStage.ADD_TO_CART)
+            self.assertIsNone(result.failure_reason)
+            self.assertEqual(result.cart_count_before, 3)
+            self.assertEqual(result.cart_count_after, 4)
+            self.assertFalse(result.checkout_attempted)
+            self.assertEqual(result.evidence["session_mode"], "existing_session")
+            self.assertEqual(len(persisted), 1)
+            self.assertEqual(persisted[0]["stage"], "add_to_cart")
+            self.assertTrue(persisted[0]["success"])
+            self.assertEqual(
+                page.calls,
+                [
+                    "ensure_session",
+                    f"open_product:{self.selection.candidate.product_url}",
+                    "assert_in_stock",
+                    "select_options",
+                    "cart_snapshot",
+                    "add_to_cart",
+                    "cart_snapshot",
+                    "checkout_started",
+                ],
+            )
 
     def test_add_products_classifies_failures(self) -> None:
         scenarios = [

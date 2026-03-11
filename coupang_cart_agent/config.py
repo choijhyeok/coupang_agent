@@ -17,6 +17,9 @@ class AppConfig:
     coupang_login_url: str = "https://login.coupang.com/login/login.pang"
     coupang_cart_url: str = "https://cart.coupang.com/cartView.pang"
     default_currency: str = "KRW"
+    cart_db_path: str = ".data/cart_results.sqlite3"
+    coupang_browser_headless: bool = True
+    coupang_storage_state_path: str = ".data/coupang-storage-state.json"
 
 
 def _load_dotenv_values(dotenv_path: str | os.PathLike[str] = ".env") -> dict[str, str]:
@@ -69,4 +72,10 @@ def load_config(
             "https://cart.coupang.com/cartView.pang",
         ),
         default_currency=source.get("DEFAULT_CURRENCY", "KRW"),
+        cart_db_path=source.get("CART_DB_PATH", ".data/cart_results.sqlite3"),
+        coupang_browser_headless=source.get("COUPANG_BROWSER_HEADLESS", "true").lower() != "false",
+        coupang_storage_state_path=source.get(
+            "COUPANG_STORAGE_STATE_PATH",
+            ".data/coupang-storage-state.json",
+        ),
     )
