@@ -66,6 +66,8 @@ Shared modules for a Telegram-driven Coupang cart agent. The repository is organ
   Parses a Telegram-style shopping request into the shared `ShoppingRequest` contract.
 - `uv run python -m coupang_cart_agent poll-telegram-once --timeout 1`
   Uses Telegram Bot API long polling once, persists inbound/session records, and prints live intake envelopes or user-facing errors.
+- `uv run python -m coupang_cart_agent capture-telegram-live-request --timeout 30 --max-attempts 10`
+  Repeats live polling until the first real Telegram update is captured or attempts are exhausted, printing a validation-friendly evidence payload.
 - `uv run python -m coupang_cart_agent integration-demo "콜라 제로 2개 담아줘" --scenario success`
   Runs a local end-to-end proof across intake, selection, cart execution, and notification with deterministic demo doubles.
 - `uv run python -m coupang_cart_agent integration-demo "삼다수 1박스 담아줘" --scenario cart-failure`
@@ -184,6 +186,7 @@ Additional module proofs:
 ```bash
 uv run python -m coupang_cart_agent parse-telegram-message "삼다수 2L 1박스 옵션: 무라벨 담아줘"
 uv run python -m coupang_cart_agent poll-telegram-once --timeout 1 --db-path .artifacts/telegram_intake.sqlite3
+uv run python -m coupang_cart_agent capture-telegram-live-request --timeout 30 --max-attempts 10 --db-path .artifacts/telegram_intake.sqlite3
 uv run python -m unittest tests.test_selection
 ```
 
