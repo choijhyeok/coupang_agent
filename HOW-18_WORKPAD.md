@@ -18,21 +18,21 @@
 
 ### Acceptance Criteria
 
-- [ ] 성공 시 상품명, 가격, 개수, 요약을 전송한다
-- [ ] 실패 시 실패 원인과 실패 지점을 전송한다
-- [ ] 메시지 길이가 과도하지 않다
-- [ ] `NotificationPayload` 계약과 일치한다
+- [x] 성공 시 상품명, 가격, 개수, 요약을 전송한다
+- [x] 실패 시 실패 원인과 실패 지점을 전송한다
+- [x] 메시지 길이가 과도하지 않다
+- [x] `NotificationPayload` 계약과 일치한다
 - [ ] 실제 Telegram chat으로 성공 또는 실패 메시지를 1건 이상 전송한다
 - [ ] local sender double만으로 완료 처리하지 않는다
 
 ### Validation Checklist
 
-- [ ] 성공 메시지 예시 전송 확인
-- [ ] 실패 메시지 예시 전송 확인
+- [x] 성공 메시지 예시 전송 확인
+- [x] 실패 메시지 예시 전송 확인
 - [x] 포맷 스냅샷 테스트 또는 문자열 테스트
 - [ ] 실제 Telegram `sendMessage` 검증 1건
-- [ ] live token 미보유 시 blocker로 남기고 완료 처리하지 않는다
-- [ ] DB에서 읽은 cart snapshot 기준으로 상품명/수량/총액이 포함된 메시지 검증 1건
+- [x] live token 미보유 시 blocker로 남기고 완료 처리하지 않는다
+- [x] DB에서 읽은 cart snapshot 기준으로 상품명/수량/총액이 포함된 메시지 검증 1건
 
 ### Notes And Blockers
 
