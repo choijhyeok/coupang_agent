@@ -9,10 +9,24 @@ from pathlib import Path
 
 from .candidate_sources import CapturedCoupangFixtureCandidateSource, DemoCandidateSource
 from .config import ConfigError, load_config, load_telegram_bot_token
-from .contracts import IntakeMode, RequestedItem, SelectedProduct, ShoppingRequest
+from .contracts import (
+    CartAddResult,
+    CartAddStage,
+    IntakeMode,
+    ProductCandidate,
+    RequestedItem,
+    SelectedProduct,
+    ShoppingRequest,
+)
 from .cart_executor import CartSnapshot, CoupangCartExecutor, OutOfStockError, SessionCredentials
 from .integration import CoupangCartAgentFlow
-from .notifications import RetryingNotificationService
+from .notifications import (
+    RetryingNotificationService,
+    SQLiteNotificationContextStore,
+    TelegramSendMessageSender,
+    build_failure_notification_payload,
+    build_success_notification_payload,
+)
 from .selection import HeuristicProductSelectionService
 from .contracts import demo_contract_payload
 from .telegram_intake import TelegramBotApiClient, TelegramPollingIntakeService
@@ -252,9 +266,101 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({key: [asdict(candidate) for candidate in value] for key, value in result.items()}, ensure_ascii=False, indent=2))
         return 0
 
+    if command == "send-telegram-notification":
+        parser = argparse.ArgumentParser(prog="python -m coupang_cart_agent send-telegram-notification")
+        parser.add_argument("--chat-id", required=True)
+        parser.add_argument("--scenario", choices=("success", "failure"), default="success")
+        parser.add_argument("--user-id", default="telegram:cli-user")
+        parser.add_argument("--database-path")
+        parser.add_argument("--failure-stage", default="cart_add")
+        parser.add_argument("--failure-reason", default="장바구니 담기 중 예기치 못한 오류가 발생했습니다.")
+        parser.add_argument("--failure-detail", default=None)
+        parsed = parser.parse_args(args[1:])
+
+        try:
+            telegram_bot_token = load_telegram_bot_token()
+        except ConfigError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+
+        notification_service = RetryingNotificationService(
+            sender=TelegramSendMessageSender(
+                client=TelegramBotApiClient(token=telegram_bot_token)
+            ),
+            max_attempts=3,
+        )
+
+        if parsed.scenario == "failure":
+            payload = build_failure_notification_payload(
+                chat_id=parsed.chat_id,
+                stage=parsed.failure_stage,
+                reason=parsed.failure_reason,
+                detail=parsed.failure_detail,
+            )
+        else:
+            contract_demo = demo_contract_payload()
+            cart_result_data = contract_demo["cart_add_result"]
+            selected = cart_result_data["selected_product"]
+            candidate = selected["candidate"]
+            demo_results = [
+                build_demo_cart_result(
+                    product_id=str(candidate["product_id"]),
+                    name=str(candidate["name"]),
+                    price_krw=int(candidate["price_krw"]),
+                    quantity=int(selected["quantity"]),
+                )
+            ]
+            cart_snapshot_items = None
+            prior_purchases = None
+            if parsed.database_path:
+                context_store = SQLiteNotificationContextStore(database_path=parsed.database_path)
+                notification_context = context_store.load(user_id=parsed.user_id)
+                cart_snapshot_items = notification_context["cart_snapshot_items"]
+                prior_purchases = notification_context["prior_purchases"]
+            payload = build_success_notification_payload(
+                chat_id=parsed.chat_id,
+                cart_results=demo_results,
+                cart_snapshot_items=cart_snapshot_items,
+                prior_purchases=prior_purchases,
+            )
+
+        notification_service.send(payload)
+        print(json.dumps(asdict(payload), ensure_ascii=False, indent=2, default=str))
+        return 0
+
     print(
         "Usage: python -m coupang_cart_agent "
-        "[contracts-example|check-config|parse-telegram-message|poll-telegram-once|capture-telegram-live-request|integration-demo|show-captured-candidates]",
+        "[contracts-example|check-config|parse-telegram-message|poll-telegram-once|capture-telegram-live-request|integration-demo|show-captured-candidates|send-telegram-notification]",
         file=sys.stderr,
     )
     return 1
+
+
+def build_demo_cart_result(
+    *,
+    product_id: str,
+    name: str,
+    price_krw: int,
+    quantity: int,
+) -> CartAddResult:
+    selected_product = SelectedProduct(
+        request_item_name=name,
+        candidate=ProductCandidate(
+            product_id=product_id,
+            name=name,
+            price_krw=price_krw,
+            rating=4.8,
+            review_count=1200,
+            product_url=f"https://www.coupang.com/vp/products/{product_id}",
+        ),
+        quantity=quantity,
+        selection_reason="Balanced rating, reviews, and price.",
+        score=8.4,
+    )
+    return CartAddResult(
+        success=True,
+        cart_item_id=f"cart-{product_id}",
+        selected_product=selected_product,
+        stage=CartAddStage.ADD_TO_CART,
+        message="Item added to cart.",
+    )
