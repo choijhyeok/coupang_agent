@@ -24,6 +24,14 @@ class AppConfig:
     coupang_chrome_user_data_dir: str | None = None
     coupang_chrome_profile_directory: str = "Default"
     coupang_chrome_remote_debugging_port: int = 9223
+    azure_openai_endpoint: str | None = None
+    azure_openai_api_key: str | None = None
+    azure_openai_deployment: str | None = None
+    azure_openai_api_version: str = "2024-12-01-preview"
+    postgres_dsn: str | None = None
+    coupang_search_endpoint: str | None = None
+    app_host: str = "127.0.0.1"
+    app_port: int = 8080
 
 
 def load_telegram_bot_token(
@@ -104,22 +112,12 @@ def load_config(
         coupang_chrome_user_data_dir=source.get("COUPANG_CHROME_USER_DATA_DIR") or None,
         coupang_chrome_profile_directory=source.get("COUPANG_CHROME_PROFILE_DIRECTORY", "Default"),
         coupang_chrome_remote_debugging_port=int(source.get("COUPANG_CHROME_REMOTE_DEBUGGING_PORT", "9223")),
+        azure_openai_endpoint=source.get("AZURE_OPENAI_ENDPOINT") or None,
+        azure_openai_api_key=source.get("AZURE_OPENAI_API_KEY") or None,
+        azure_openai_deployment=source.get("AZURE_OPENAI_DEPLOYMENT") or None,
+        azure_openai_api_version=source.get("AZURE_OPENAI_API_VERSION", "2024-12-01-preview"),
+        postgres_dsn=source.get("POSTGRES_DSN") or source.get("DATABASE_URL") or None,
+        coupang_search_endpoint=source.get("COUPANG_SEARCH_ENDPOINT") or None,
+        app_host=source.get("APP_HOST", "127.0.0.1"),
+        app_port=int(source.get("APP_PORT", "8080")),
     )
-
-
-def load_telegram_bot_token(
-    env: dict[str, str] | None = None,
-    *,
-    dotenv_path: str | os.PathLike[str] = ".env",
-) -> str:
-    source = {
-        **_load_dotenv_values(dotenv_path),
-        **(dict(os.environ) if env is None else env),
-    }
-    token = source.get("TELEGRAM_BOT_TOKEN", "").strip()
-    if not token:
-        raise ConfigError(
-            "Missing required configuration: TELEGRAM_BOT_TOKEN. "
-            "Set it in the environment or .env before running."
-        )
-    return token

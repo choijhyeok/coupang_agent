@@ -1,244 +1,223 @@
 # Coupang Cart Agent
 
-Shared modules for a Telegram-driven Coupang cart agent. The repository is organized so intake, selection, cart automation, notifications, and integration can evolve on separate branches without redesigning shared contracts.
+Telegram shopping requests flow into product selection, Coupang add-to-cart automation, and Telegram notifications. This workspace keeps the module contracts stable while adding a production-shaped integration path with LangGraph state persistence, Azure OpenAI planning, and PostgreSQL operational storage.
 
 ## Project Layout
 
 ```text
 .
 ├── coupang_cart_agent/
-│   ├── __init__.py
+│   ├── azure_openai.py
 │   ├── cart_adapters.py
-│   ├── __main__.py
 │   ├── cart_executor.py
 │   ├── cart_persistence.py
 │   ├── candidate_sources.py
 │   ├── cli.py
 │   ├── config.py
 │   ├── contracts.py
+│   ├── http_server.py
 │   ├── integration.py
+│   ├── live_workflow.py
 │   ├── notifications.py
+│   ├── postgres_store.py
 │   ├── selection.py
 │   ├── selection_context.py
 │   ├── services.py
-│   └── telegram_intake.py
+│   ├── telegram_intake.py
+│   └── telegram_persistence.py
+├── docker-compose.yml
+├── Dockerfile
 ├── main.py
 ├── pyproject.toml
 └── tests/
-    ├── test_foundation.py
-    ├── test_integration.py
-    ├── test_selection.py
-    └── test_telegram_intake.py
 ```
 
-## Quick Start
+## Runtime Modes
 
-1. Install dependencies:
+### Demo Path
 
-   ```bash
-   uv sync
-   ```
+Safe local validation. Uses deterministic candidates, a fake Coupang page, and a local notification sender.
 
-2. Copy the example environment file and fill in required values:
+```bash
+uv run python -m coupang_cart_agent integration-demo "콜라 제로 2개 담아줘" --scenario success
+uv run python -m coupang_cart_agent integration-demo "삼다수 1박스 담아줘" --scenario cart-failure
+```
 
-   ```bash
-   cp .env.example .env
-   ```
+This path is useful for local smoke checks only. It is not sufficient for live completion.
 
-   `load_config()` reads `.env` first and lets explicit process environment variables override those values.
-   Use placeholders only for local validation. Do not commit real credentials.
+### Live Path
 
-3. Run the shared contracts example:
+Production-shaped integration. Uses:
 
-   ```bash
-   uv run python -m coupang_cart_agent contracts-example
-   ```
+- Telegram Bot API intake
+- LangGraph workflow checkpoints in PostgreSQL
+- Azure OpenAI planning node
+- heuristic product selection
+- real Coupang cart automation
+- real Telegram notifications
 
-4. Validate config loading:
+Primary live commands:
 
-   ```bash
-   env -i PATH="$PATH" HOME="$HOME" UV_CACHE_DIR=.uv-cache uv run python -m coupang_cart_agent check-config
-   ```
+```bash
+uv run python -m coupang_cart_agent integration-live-request \
+  "양파 1개 담아줘" \
+  --user-id telegram:cli-user \
+  --chat-id cli-chat
 
-## Commands
+uv run python -m coupang_cart_agent integration-live-telegram-once \
+  --timeout 10 \
+  --intake-db-path .artifacts/telegram_intake.sqlite3
+```
 
-- `uv run python -m coupang_cart_agent contracts-example`
-  Prints a sample request, selected product, cart result, and notification payload.
-- `uv run python -m coupang_cart_agent check-config`
-  Validates required environment variables and prints a clear error when config is incomplete.
-- `uv run python -m coupang_cart_agent parse-telegram-message "콜라 제로 2개 담아줘"`
-  Parses a Telegram-style shopping request into the shared `ShoppingRequest` contract.
-- `uv run python -m coupang_cart_agent poll-telegram-once --timeout 1`
-  Uses Telegram Bot API long polling once, persists inbound/session records, and prints live intake envelopes or user-facing errors.
-- `uv run python -m coupang_cart_agent capture-telegram-live-request --timeout 30 --max-attempts 10`
-  Repeats live polling until the first real Telegram update is captured or attempts are exhausted, printing a validation-friendly evidence payload.
-- `uv run python -m coupang_cart_agent integration-demo "콜라 제로 2개 담아줘" --scenario success`
-  Runs a local end-to-end proof across intake, selection, cart execution, and notification with deterministic demo doubles.
-- `uv run python -m coupang_cart_agent integration-demo "삼다수 1박스 담아줘" --scenario cart-failure`
-  Exercises a failure path that stops before checkout and emits a failure notification.
-- `uv run python -m coupang_cart_agent cart-live-add --headed --product-url "https://www.coupang.com/vp/products/..." --product-id "..." --name "..."`
-  Runs the production-shaped live cart adapter against a real Coupang product page and persists the resulting `CartAddResult` into SQLite.
-- `uv run python -m coupang_cart_agent show-captured-candidates --item-name 양파`
-  Loads a captured production-shaped candidate fixture and prints normalized candidates.
-- `uv run python -m coupang_cart_agent send-telegram-notification --chat-id <chat_id> --scenario success --database-path <sqlite_db>`
-  Sends a real Telegram success or failure message using the live `sendMessage` path. When `--database-path` is provided, the success payload reads `current_cart_snapshot_items` and `prior_purchases` from SQLite to compose the reply.
-- `uv run python main.py contracts-example`
-  Root entrypoint wrapper for local execution.
+`integration-live-request` bypasses Telegram network polling but still runs the LangGraph, Azure OpenAI, PostgreSQL, Coupang, and Telegram-notification path.
 
-## Shared Contracts
+`integration-live-telegram-once` is the operator command for the full path:
 
-The following contracts are shared across modules:
+1. poll Telegram once
+2. parse the first valid request
+3. run the live LangGraph workflow
+4. add the selected product to the Coupang cart
+5. send a Telegram notification
+6. persist workflow state and cart/session history to PostgreSQL
 
-- `RequestedItem`
-- `ShoppingRequest`
-- `RequestSession`
-- `ShoppingRequestEnvelope`
-- `ProductCandidate`
-- `SelectedProduct`
-- `CartAddResult`
-- `NotificationPayload`
+## Environment
 
-See [coupang_cart_agent/contracts.py](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-17/coupang_cart_agent/contracts.py) for field-level definitions.
+Create `.env` from the example:
 
-## Service Interfaces
+```bash
+cp .env.example .env
+```
 
-Downstream modules should implement the protocols in [coupang_cart_agent/services.py](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-17/coupang_cart_agent/services.py):
+Required for the live workflow:
 
-- `TelegramIntakeService`
-- `ProductSelectionService`
-- `CoupangCartService`
-- `NotificationService`
+- `TELEGRAM_BOT_TOKEN`
+- `COUPANG_USERNAME`
+- `COUPANG_PASSWORD`
+- `AZURE_OPENAI_ENDPOINT`
+- `AZURE_OPENAI_API_KEY`
+- `AZURE_OPENAI_DEPLOYMENT`
+- `POSTGRES_DSN`
 
-## Telegram Intake
+Required for real candidate lookup:
 
-[coupang_cart_agent/telegram_intake.py](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-17/coupang_cart_agent/telegram_intake.py) provides a production-shaped intake implementation for HOW-8.
+- `COUPANG_SEARCH_ENDPOINT`
 
-- `TelegramBotApiClient`: minimal Telegram Bot API client using long polling.
-- `TelegramPollingIntakeService`: keeps the demo parser path separate from the production long-polling path, parses `... 담아줘` messages, persists inbound/session records, and returns a LangGraph-ready `ShoppingRequestEnvelope`.
-- `TelegramIntakeRepository`: SQLite-backed storage for Telegram session and inbound request records.
+If `COUPANG_SEARCH_ENDPOINT` is not available, you can pass `--fixture-path` to the live commands for operator preflight only:
 
-Supported parsing rules:
+```bash
+uv run python -m coupang_cart_agent integration-live-request \
+  "양파 1개 담아줘" \
+  --fixture-path tests/fixtures/coupang_search_onion_fixture.json
+```
 
-- quantity units such as `개`, `병`, `팩`, `박스`
-- optional constraints through parentheses or `옵션:` / `조건:`
-- optional price cap such as `20000원 이하`
-- multiple requested items separated by newlines, `;`, or `그리고`
+That preflight path still uses LangGraph, PostgreSQL, Azure OpenAI, Coupang cart automation, and Telegram notifications, but it does not satisfy a real live candidate-fetch validation by itself.
 
-Live intake persistence stores:
+Validated live browser path on March 11, 2026:
 
-- stable `session_id` linked to `user_id` and `chat_id`
-- inbound message rows with parse status, raw update payload, and normalized `request_id`
-- enough envelope metadata to hand the request into LangGraph state without reshaping
+```bash
+COUPANG_BROWSER_LAUNCH_MODE=cdp_chrome
+COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome"
+COUPANG_CHROME_PROFILE_DIRECTORY="Profile 1"
+```
 
-## Selection Engine
+`Default` returned `Access Denied` in this workspace. `Profile 1` restored the authenticated Coupang session and completed add-to-cart successfully.
 
-[coupang_cart_agent/selection.py](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-17/coupang_cart_agent/selection.py) exposes a pure `select_best_product()` helper and a protocol-compatible `HeuristicProductSelectionService` that scores candidates by rating, review count, relative price, prior purchase history, and recent session context when a store is provided.
+## Docker Compose
 
-[coupang_cart_agent/candidate_sources.py](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-17/coupang_cart_agent/candidate_sources.py) separates deterministic demo candidates from production-shaped sources:
+`docker compose up` starts a PostgreSQL container and an app container exposing health and demo smoke endpoints.
 
-- `DemoCandidateSource` for safe local end-to-end demos
-- `CapturedCoupangFixtureCandidateSource` for captured repo fixtures
-- `LiveCoupangSearchCandidateSource` for live collector or Scrapling-equivalent JSON output
+```bash
+docker compose up -d --build
+curl http://127.0.0.1:8080/healthz
+curl http://127.0.0.1:8080/smoke/demo
+```
 
-[coupang_cart_agent/selection_context.py](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-17/coupang_cart_agent/selection_context.py) defines the DB read path for prior purchases and recent session signals, including an SQLite-backed store used by tests.
+The compose app runs:
 
-## Notifications
+```bash
+uv run python -m coupang_cart_agent serve-http --host 0.0.0.0 --port 8080
+```
 
-The telegram notification module lives in [coupang_cart_agent/notifications.py](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-17/coupang_cart_agent/notifications.py).
-It exposes payload builders aligned with `NotificationPayload`, a bounded formatter for concise success and failure messages, a Telegram `sendMessage` sender adapter, a retrying delivery service, and a SQLite-backed context reader for `current_cart_snapshot_items` plus `prior_purchases`.
+The HTTP server is for health and smoke validation. Operators should run the live integration commands explicitly when real credentials and access are available.
 
-## Cart Automation Module
+## Other Commands
 
-[coupang_cart_agent/cart_executor.py](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-17/coupang_cart_agent/cart_executor.py) consumes `SelectedProduct` inputs and returns `CartAddResult` while stopping at add-to-cart.
+```bash
+uv run python -m coupang_cart_agent check-config
+uv run python -m coupang_cart_agent parse-telegram-message "콜라 제로 2개 담아줘"
+uv run python -m coupang_cart_agent poll-telegram-once --timeout 1
+uv run python -m coupang_cart_agent capture-telegram-live-request --timeout 30 --max-attempts 10
+uv run python -m coupang_cart_agent cart-live-add --headed --product-url "https://www.coupang.com/vp/products/..." --product-id "..." --name "..."
+uv run python -m coupang_cart_agent send-telegram-notification --chat-id <chat_id> --scenario success
+```
 
-- `coupang_cart_agent/cart_adapters.py` contains the split between `DemoCoupangCartPage`, the direct `PlaywrightCoupangCartPage`, and the copied-profile `ChromeCdpCoupangCartPage`.
-- `coupang_cart_agent/cart_persistence.py` persists cart add results and before/after snapshots into SQLite.
+## LangGraph Live Workflow
 
-## Integration Flow
+The live workflow is defined in `coupang_cart_agent/live_workflow.py`.
 
-[coupang_cart_agent/integration.py](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-17/coupang_cart_agent/integration.py) connects the existing modules without changing their shared interfaces.
+Node order:
 
-- Input: Telegram-style request text
-- Pipeline: parse request -> load candidates -> score/select -> add to cart -> send notification
-- Boundary: any failure stops the flow and sends a concise failure notification
-- Safety: cart automation stops at add-to-cart and treats checkout as a failure condition
+1. `load_context`
+2. `agent_plan`
+3. `load_candidates`
+4. `select_products`
+5. `add_to_cart`
+6. `notify`
+7. `persist`
 
-## Operator Run Guide
+State is checkpointed through LangGraph's PostgreSQL checkpointer using `thread_id = envelope.session.session_id`.
 
-1. Install dependencies and prepare `.env`.
-2. Validate configuration:
+Operational data is stored separately in PostgreSQL:
 
-   ```bash
-   env -i PATH="$PATH" HOME="$HOME" UV_CACHE_DIR=.uv-cache uv run python -m coupang_cart_agent check-config
-   ```
+- `workflow_threads`
+- `workflow_runs`
+- `prior_purchases`
+- `recent_session_signals`
+- `current_cart_snapshot_items`
 
-3. Run the deterministic end-to-end success proof:
-
-   ```bash
-   uv run python -m coupang_cart_agent integration-demo "콜라 제로 2개 담아줘" --scenario success
-   ```
-
-4. Run the deterministic failure proof:
-
-   ```bash
-   uv run python -m coupang_cart_agent integration-demo "삼다수 1박스 담아줘" --scenario cart-failure
-   ```
-
-5. Run the automated validation suite:
-
-   ```bash
-   uv run python -m unittest discover -s tests
-   ```
-
-The demo command is safe for local verification because it uses fake candidate lookup, fake cart page interactions, and a local notification sender. It never reaches real checkout or payment.
-
-For live cart validation, use `cart-live-add` with a real Coupang product URL and inspect the JSON output plus the SQLite record at `CART_DB_PATH`.
-
-- `COUPANG_BROWSER_LAUNCH_MODE=playwright` uses the direct Playwright-managed browser path.
-- `COUPANG_BROWSER_LAUNCH_MODE=cdp_chrome` copies an existing local Chrome profile, launches Chrome separately, and attaches over CDP. This is the validated live path for March 11, 2026 because it restored a real authenticated Coupang session where direct Playwright launches were blocked.
+That lets the workflow restore both prior purchase history and current-thread session signals on subsequent runs.
 
 ## Validation
 
-Run:
+Unit and integration tests:
 
 ```bash
 uv run python -m unittest discover -s tests
 ```
 
-Additional module proofs:
+Focused live-workflow tests:
 
 ```bash
-uv run python -m coupang_cart_agent parse-telegram-message "삼다수 2L 1박스 옵션: 무라벨 담아줘"
-uv run python -m coupang_cart_agent poll-telegram-once --timeout 1 --db-path .artifacts/telegram_intake.sqlite3
-uv run python -m coupang_cart_agent capture-telegram-live-request --timeout 30 --max-attempts 10 --db-path .artifacts/telegram_intake.sqlite3
-uv run python -m unittest tests.test_selection
-uv run python -m coupang_cart_agent show-captured-candidates --item-name 양파
+uv run python -m unittest tests.test_live_workflow
 ```
 
-Notification-specific validation:
+Docker smoke:
 
 ```bash
-uv run python -m unittest tests.test_notifications
-uv run python -m coupang_cart_agent send-telegram-notification --chat-id <chat_id> --scenario failure
+docker compose up -d --build
+curl http://127.0.0.1:8080/healthz
+curl http://127.0.0.1:8080/smoke/demo
+docker compose down -v
 ```
 
-Integration-specific validation:
+Suggested live operator validation order:
 
 ```bash
-uv run python -m unittest tests.test_integration
+uv run python -m coupang_cart_agent check-config
+uv run python -m coupang_cart_agent integration-live-request "양파 1개 담아줘" --fixture-path tests/fixtures/coupang_search_onion_fixture.json
+uv run python -m coupang_cart_agent integration-live-telegram-once --timeout 10
 ```
 
-Live cart validation example:
+Recorded live validation evidence on March 11, 2026:
 
-```bash
-COUPANG_BROWSER_LAUNCH_MODE=cdp_chrome \
-COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" \
-COUPANG_CHROME_PROFILE_DIRECTORY="Profile 1" \
-uv run python -m coupang_cart_agent cart-live-add \
-  --product-url "https://www.coupang.com/vp/products/7566747125?itemId=24967111280&vendorItemId=91892104543" \
-  --product-id "7566747125" \
-  --name "코카콜라 제로제로, 350ml, 24개" \
-  --price-krw 19940 \
-  --rating 5.0 \
-  --review-count 19723
-```
+- Real Telegram intake capture succeeded for `telegram-update-286968896` with text `콜라 제로 2개 담아줘`
+- Real Telegram -> selection -> Coupang add-to-cart -> Telegram notification succeeded with:
+  `integration-live-telegram-once --timeout 1 --intake-db-path .artifacts/telegram_intake.sqlite3 --fixture-path tests/fixtures/coupang_search_onion_fixture.json`
+- The remaining gap is a production candidate source for arbitrary live requests, tracked separately in `HOW-21`
+
+## Notes
+
+- The workflow stops at verified add-to-cart. It must not continue into checkout or payment.
+- `cart-live-add` remains useful for isolated Coupang selector debugging.
+- `integration-demo` and `/smoke/demo` are safe local validation paths.
+- `integration-live-*` commands are the production-shaped integration paths.

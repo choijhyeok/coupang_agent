@@ -5,7 +5,10 @@ description = "Shared foundation and contracts for the Coupang cart agent"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "langgraph>=1.1.0",
+    "langgraph-checkpoint-postgres>=3.0.4",
     "playwright>=1.58.0",
+    "psycopg[binary]>=3.3.3",
 ]
 
 [tool.uv]

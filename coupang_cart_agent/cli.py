@@ -4,9 +4,14 @@ import argparse
 import json
 import sys
 import time
+from contextlib import contextmanager
 from dataclasses import asdict, replace
+from datetime import UTC, datetime
 from pathlib import Path
 
+from langgraph.checkpoint.postgres import PostgresSaver
+
+from .azure_openai import AzureOpenAIPlanner
 from .candidate_sources import CapturedCoupangFixtureCandidateSource, DemoCandidateSource
 from .cart_adapters import (
     ChromeCdpCoupangCartPage,
@@ -22,13 +27,17 @@ from .contracts import (
     CartAddResult,
     CartAddStage,
     IntakeMode,
+    RequestSession,
     ProductCandidate,
     RequestedItem,
     SelectedProduct,
     ShoppingRequest,
+    ShoppingRequestEnvelope,
     demo_contract_payload,
 )
+from .http_server import CoupangCartAgentHttpServer
 from .integration import CoupangCartAgentFlow
+from .live_workflow import CoupangCartAgentLiveWorkflow
 from .notifications import (
     RetryingNotificationService,
     SQLiteNotificationContextStore,
@@ -36,6 +45,7 @@ from .notifications import (
     build_failure_notification_payload,
     build_success_notification_payload,
 )
+from .postgres_store import PostgresOperationalStore
 from .selection import HeuristicProductSelectionService
 from .telegram_intake import TelegramBotApiClient, TelegramPollingIntakeService
 from .telegram_persistence import TelegramIntakeRepository
@@ -46,6 +56,91 @@ def _build_live_intake_service(*, token: str, db_path: str) -> TelegramPollingIn
         TelegramBotApiClient(token=token),
         TelegramIntakeRepository(db_path),
     )
+
+
+def _build_live_notification_service(*, token: str) -> RetryingNotificationService:
+    return RetryingNotificationService(
+        sender=TelegramSendMessageSender(client=TelegramBotApiClient(token=token)),
+        max_attempts=3,
+    )
+
+
+def _build_live_candidate_source(*, config, fixture_path: str | None):
+    if fixture_path:
+        return CapturedCoupangFixtureCandidateSource(fixture_path=fixture_path)
+    if config.coupang_search_endpoint:
+        from .candidate_sources import LiveCoupangSearchCandidateSource
+
+        return LiveCoupangSearchCandidateSource(search_endpoint=config.coupang_search_endpoint)
+    raise ConfigError(
+        "Missing live candidate source configuration. Set COUPANG_SEARCH_ENDPOINT or pass --fixture-path."
+    )
+
+
+def _build_synthetic_live_envelope(request: ShoppingRequest) -> ShoppingRequestEnvelope:
+    session_id = f"telegram-session:{request.chat_id}:{request.user_id}"
+    occurred_at = request.received_at if request.received_at.tzinfo is not None else request.received_at.replace(tzinfo=UTC)
+    return ShoppingRequestEnvelope(
+        source="cli-live",
+        mode=IntakeMode.LIVE,
+        request=request,
+        session=RequestSession(
+            session_id=session_id,
+            channel="telegram",
+            user_id=request.user_id,
+            chat_id=request.chat_id,
+            created_at=occurred_at,
+            last_message_at=occurred_at,
+        ),
+        inbound_message_id=request.request_id,
+        update_id=None,
+        message_id=None,
+        raw_text=request.raw_text,
+        raw_update={},
+        metadata={"created_by": "integration-live-request"},
+    )
+
+
+@contextmanager
+def _open_live_workflow(
+    *,
+    config,
+    fixture_path: str | None,
+):
+    if not config.postgres_dsn:
+        raise ConfigError("POSTGRES_DSN or DATABASE_URL is required for live integration commands.")
+
+    operational_store = PostgresOperationalStore(config.postgres_dsn)
+    operational_store.setup()
+    candidate_source = _build_live_candidate_source(config=config, fixture_path=fixture_path)
+    page = build_live_cart_page(config)
+    cart_service = CoupangCartExecutor(
+        page=page,
+        credentials=SessionCredentials(
+            username=config.coupang_username,
+            password=config.coupang_password,
+        ),
+        result_store=SqliteCartResultStore(config.cart_db_path),
+    )
+    with PostgresSaver.from_conn_string(config.postgres_dsn) as checkpointer:
+        checkpointer.setup()
+        workflow = CoupangCartAgentLiveWorkflow(
+            candidate_source=candidate_source,
+            cart_service=cart_service,
+            notification_service=_build_live_notification_service(token=config.telegram_bot_token),
+            operational_store=operational_store,
+            agent_planner=AzureOpenAIPlanner(
+                endpoint=config.azure_openai_endpoint,
+                api_key=config.azure_openai_api_key,
+                deployment=config.azure_openai_deployment,
+                api_version=config.azure_openai_api_version,
+            ),
+            checkpointer=checkpointer,
+        )
+        try:
+            yield workflow, operational_store
+        finally:
+            page.close()
 
 
 def build_live_cart_page(config):
@@ -102,6 +197,13 @@ def main(argv: list[str] | None = None) -> int:
                     "coupang_storage_state_path": config.coupang_storage_state_path,
                     "cart_db_path": config.cart_db_path,
                     "default_currency": config.default_currency,
+                    "azure_openai_endpoint": config.azure_openai_endpoint,
+                    "azure_openai_deployment": config.azure_openai_deployment,
+                    "azure_openai_api_version": config.azure_openai_api_version,
+                    "postgres_dsn_set": bool(config.postgres_dsn),
+                    "coupang_search_endpoint": config.coupang_search_endpoint,
+                    "app_host": config.app_host,
+                    "app_port": config.app_port,
                 },
                 indent=2,
             )
@@ -424,9 +526,136 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(asdict(payload), ensure_ascii=False, indent=2, default=str))
         return 0
 
+    if command == "integration-live-request":
+        parser = argparse.ArgumentParser(prog="python -m coupang_cart_agent integration-live-request")
+        parser.add_argument("text")
+        parser.add_argument("--user-id", default="telegram:cli-user")
+        parser.add_argument("--chat-id", default="cli-chat")
+        parser.add_argument("--fixture-path", default=None)
+        parser.add_argument("--thread-id", default=None)
+        parsed = parser.parse_args(args[1:])
+
+        try:
+            config = load_config()
+        except ConfigError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+
+        intake_service = TelegramPollingIntakeService()
+        request = intake_service.parse_demo_message(
+            user_id=parsed.user_id,
+            chat_id=parsed.chat_id,
+            text=parsed.text,
+        )
+        envelope = _build_synthetic_live_envelope(request)
+        with _open_live_workflow(config=config, fixture_path=parsed.fixture_path) as (workflow, operational_store):
+            result = workflow.run_envelope(envelope, thread_id=parsed.thread_id)
+            thread_id = parsed.thread_id or envelope.session.session_id
+            persisted_state = workflow.get_persisted_state(thread_id=thread_id)
+
+        print(
+            json.dumps(
+                {
+                    "mode": "live-request",
+                    "thread_id": thread_id,
+                    "result": result.as_dict(),
+                    "persisted_state_keys": sorted(persisted_state.keys()),
+                    "thread_context": operational_store.load_thread_context(thread_id=thread_id),
+                    "workflow_runs": operational_store.fetch_workflow_runs(),
+                },
+                ensure_ascii=False,
+                indent=2,
+                default=str,
+            )
+        )
+        return 0 if result.success else 2
+
+    if command == "integration-live-telegram-once":
+        parser = argparse.ArgumentParser(prog="python -m coupang_cart_agent integration-live-telegram-once")
+        parser.add_argument("--offset", type=int, default=None)
+        parser.add_argument("--timeout", type=int, default=10)
+        parser.add_argument("--intake-db-path", default=".artifacts/telegram_intake.sqlite3")
+        parser.add_argument("--fixture-path", default=None)
+        parser.add_argument("--skip-error-response", action="store_true")
+        parsed = parser.parse_args(args[1:])
+
+        try:
+            config = load_config()
+        except ConfigError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+
+        intake_service = _build_live_intake_service(
+            token=config.telegram_bot_token,
+            db_path=parsed.intake_db_path,
+        )
+        intake_results = intake_service.poll_once(
+            offset=parsed.offset,
+            timeout=parsed.timeout,
+            mode=IntakeMode.LIVE,
+            send_error_response=not parsed.skip_error_response,
+        )
+        first_parsed = next((result for result in intake_results if result.envelope is not None), None)
+        if first_parsed is None or first_parsed.envelope is None:
+            print(
+                json.dumps(
+                    {
+                        "mode": "live-telegram-once",
+                        "intake_results": [result.as_dict() for result in intake_results],
+                        "message": "No parseable Telegram requests were captured.",
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                    default=str,
+                )
+            )
+            return 2
+
+        envelope = first_parsed.envelope
+        with _open_live_workflow(config=config, fixture_path=parsed.fixture_path) as (workflow, operational_store):
+            result = workflow.run_envelope(envelope)
+            persisted_state = workflow.get_persisted_state(thread_id=envelope.session.session_id)
+
+        print(
+            json.dumps(
+                {
+                    "mode": "live-telegram-once",
+                    "intake": first_parsed.as_dict(),
+                    "result": result.as_dict(),
+                    "persisted_state_keys": sorted(persisted_state.keys()),
+                    "thread_context": operational_store.load_thread_context(thread_id=envelope.session.session_id),
+                    "workflow_runs": operational_store.fetch_workflow_runs(),
+                },
+                ensure_ascii=False,
+                indent=2,
+                default=str,
+            )
+        )
+        return 0 if result.success else 2
+
+    if command == "serve-http":
+        parser = argparse.ArgumentParser(prog="python -m coupang_cart_agent serve-http")
+        parser.add_argument("--host", default="0.0.0.0")
+        parser.add_argument("--port", type=int, default=8080)
+        parser.add_argument("--postgres-dsn", default=None)
+        parsed = parser.parse_args(args[1:])
+
+        db_healthcheck = None
+        if parsed.postgres_dsn:
+            store = PostgresOperationalStore(parsed.postgres_dsn)
+            store.setup()
+            db_healthcheck = store.ping
+        server = CoupangCartAgentHttpServer(
+            host=parsed.host,
+            port=parsed.port,
+            db_healthcheck=db_healthcheck,
+        )
+        server.serve_forever()
+        return 0
+
     print(
         "Usage: python -m coupang_cart_agent "
-        "[contracts-example|check-config|parse-telegram-message|poll-telegram-once|capture-telegram-live-request|integration-demo|cart-live-add|show-captured-candidates|send-telegram-notification]",
+        "[contracts-example|check-config|parse-telegram-message|poll-telegram-once|capture-telegram-live-request|integration-demo|cart-live-add|show-captured-candidates|send-telegram-notification|integration-live-request|integration-live-telegram-once|serve-http]",
         file=sys.stderr,
     )
     return 1

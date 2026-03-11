@@ -1,0 +1,57 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: coupang_cart_agent
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d coupang_cart_agent"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build:
+      context: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_DSN: postgresql://postgres:postgres@postgres:5432/coupang_cart_agent
+      APP_PORT: 8080
+    ports:
+      - "8080:8080"
+    command:
+      [
+        "uv",
+        "run",
+        "python",
+        "-m",
+        "coupang_cart_agent",
+        "serve-http",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8080",
+        "--postgres-dsn",
+        "postgresql://postgres:postgres@postgres:5432/coupang_cart_agent"
+      ]
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=5).read()"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres-data:
