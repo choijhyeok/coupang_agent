@@ -73,7 +73,7 @@ Shared modules for a Telegram-driven Coupang cart agent. The repository is organ
 - `uv run python -m coupang_cart_agent integration-demo "삼다수 1박스 담아줘" --scenario cart-failure`
   Exercises a failure path that stops before checkout and emits a failure notification.
 - `uv run python -m coupang_cart_agent cart-live-add --headed --product-url "https://www.coupang.com/vp/products/..." --product-id "..." --name "..."`
-  Runs the production-shaped Playwright cart adapter against a live Coupang product page and persists the resulting `CartAddResult` into SQLite.
+  Runs the production-shaped live cart adapter against a real Coupang product page and persists the resulting `CartAddResult` into SQLite.
 - `uv run python main.py contracts-example`
   Root entrypoint wrapper for local execution.
 
@@ -128,7 +128,7 @@ for transient delivery failures.
 
 [coupang_cart_agent/cart_executor.py](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-17/coupang_cart_agent/cart_executor.py) consumes `SelectedProduct` inputs and returns `CartAddResult` while stopping at add-to-cart.
 
-- `coupang_cart_agent/cart_adapters.py` contains the split between `DemoCoupangCartPage` and the production-shaped `PlaywrightCoupangCartPage`.
+- `coupang_cart_agent/cart_adapters.py` contains the split between `DemoCoupangCartPage`, the direct `PlaywrightCoupangCartPage`, and the copied-profile `ChromeCdpCoupangCartPage`.
 - `coupang_cart_agent/cart_persistence.py` persists cart add results and before/after snapshots into SQLite.
 
 ## Integration Flow
@@ -169,7 +169,10 @@ for transient delivery failures.
 
 The demo command is safe for local verification because it uses fake candidate lookup, fake cart page interactions, and a local notification sender. It never reaches real checkout or payment.
 
-For live cart validation, use `cart-live-add` with a real Coupang product URL and inspect the JSON output plus the SQLite record at `CART_DB_PATH`. The current adapter uses Playwright as the real browser driver. On March 11, 2026, Coupang returned `Access Denied` for automated browser sessions in this environment, so live completion currently produces a classified `login_failed` blocker instead of a fake success.
+For live cart validation, use `cart-live-add` with a real Coupang product URL and inspect the JSON output plus the SQLite record at `CART_DB_PATH`.
+
+- `COUPANG_BROWSER_LAUNCH_MODE=playwright` uses the direct Playwright-managed browser path.
+- `COUPANG_BROWSER_LAUNCH_MODE=cdp_chrome` copies an existing local Chrome profile, launches Chrome separately, and attaches over CDP. This is the validated live path for March 11, 2026 because it restored a real authenticated Coupang session where direct Playwright launches were blocked.
 
 ## Validation
 
@@ -201,8 +204,10 @@ uv run python -m unittest tests.test_integration
 Live cart validation example:
 
 ```bash
+COUPANG_BROWSER_LAUNCH_MODE=cdp_chrome \
+COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" \
+COUPANG_CHROME_PROFILE_DIRECTORY="Profile 1" \
 uv run python -m coupang_cart_agent cart-live-add \
-  --headed \
   --product-url "https://www.coupang.com/vp/products/7566747125?itemId=24967111280&vendorItemId=91892104543" \
   --product-id "7566747125" \
   --name "코카콜라 제로제로, 350ml, 24개" \

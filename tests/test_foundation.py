@@ -70,6 +70,10 @@ class FoundationTests(unittest.TestCase):
         self.assertEqual(config.coupang_password, "test-password")
         self.assertEqual(config.cart_db_path, ".data/cart_results.sqlite3")
         self.assertTrue(config.coupang_browser_headless)
+        self.assertEqual(config.coupang_browser_launch_mode, "playwright")
+        self.assertIsNone(config.coupang_chrome_user_data_dir)
+        self.assertEqual(config.coupang_chrome_profile_directory, "Default")
+        self.assertEqual(config.coupang_chrome_remote_debugging_port, 9223)
         self.assertEqual(config.coupang_storage_state_path, ".data/coupang-storage-state.json")
 
     def test_load_config_prefers_explicit_env_over_dotenv(self) -> None:
@@ -93,6 +97,10 @@ class FoundationTests(unittest.TestCase):
                     "COUPANG_PASSWORD": "env-password",
                     "CART_DB_PATH": "/tmp/cart.sqlite3",
                     "COUPANG_BROWSER_HEADLESS": "false",
+                    "COUPANG_BROWSER_LAUNCH_MODE": "cdp_chrome",
+                    "COUPANG_CHROME_USER_DATA_DIR": "/tmp/chrome-user-data",
+                    "COUPANG_CHROME_PROFILE_DIRECTORY": "Profile 1",
+                    "COUPANG_CHROME_REMOTE_DEBUGGING_PORT": "9555",
                     "COUPANG_STORAGE_STATE_PATH": "/tmp/coupang-state.json",
                 },
                 dotenv_path=dotenv_path,
@@ -103,6 +111,10 @@ class FoundationTests(unittest.TestCase):
         self.assertEqual(config.coupang_password, "env-password")
         self.assertEqual(config.cart_db_path, "/tmp/cart.sqlite3")
         self.assertFalse(config.coupang_browser_headless)
+        self.assertEqual(config.coupang_browser_launch_mode, "cdp_chrome")
+        self.assertEqual(config.coupang_chrome_user_data_dir, "/tmp/chrome-user-data")
+        self.assertEqual(config.coupang_chrome_profile_directory, "Profile 1")
+        self.assertEqual(config.coupang_chrome_remote_debugging_port, 9555)
         self.assertEqual(config.coupang_storage_state_path, "/tmp/coupang-state.json")
 
     def test_cli_contracts_example_runs(self) -> None:

@@ -3,9 +3,15 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import asdict
+from dataclasses import asdict, replace
 
-from .cart_adapters import DemoCoupangCartPage, PlaywrightCoupangCartPage, PlaywrightCoupangSettings
+from .cart_adapters import (
+    ChromeCdpCoupangCartPage,
+    ChromeCdpSettings,
+    DemoCoupangCartPage,
+    PlaywrightCoupangCartPage,
+    PlaywrightCoupangSettings,
+)
 from .cart_persistence import SqliteCartResultStore
 from .config import ConfigError, load_config
 from .contracts import ProductCandidate, SelectedProduct
@@ -15,6 +21,30 @@ from .notifications import RetryingNotificationService
 from .selection import HeuristicProductSelectionService
 from .contracts import demo_contract_payload
 from .telegram_intake import TelegramBotApiClient, TelegramPollingIntakeService
+
+
+def build_live_cart_page(config):
+    playwright_settings = PlaywrightCoupangSettings(
+        login_url=config.coupang_login_url,
+        cart_url=config.coupang_cart_url,
+        headless=config.coupang_browser_headless,
+        storage_state_path=config.coupang_storage_state_path,
+    )
+    if config.coupang_browser_launch_mode == "cdp_chrome":
+        if not config.coupang_chrome_user_data_dir:
+            raise ConfigError(
+                "COUPANG_CHROME_USER_DATA_DIR is required when COUPANG_BROWSER_LAUNCH_MODE=cdp_chrome."
+            )
+        return ChromeCdpCoupangCartPage(
+            settings=playwright_settings,
+            cdp_settings=ChromeCdpSettings(
+                chrome_user_data_dir=config.coupang_chrome_user_data_dir,
+                chrome_profile_directory=config.coupang_chrome_profile_directory,
+                remote_debugging_port=config.coupang_chrome_remote_debugging_port,
+                copied_user_data_dir=".data/chrome-userdata-cdp",
+            ),
+        )
+    return PlaywrightCoupangCartPage(playwright_settings)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -40,6 +70,10 @@ def main(argv: list[str] | None = None) -> int:
                     "coupang_login_url": config.coupang_login_url,
                     "coupang_cart_url": config.coupang_cart_url,
                     "coupang_browser_headless": config.coupang_browser_headless,
+                    "coupang_browser_launch_mode": config.coupang_browser_launch_mode,
+                    "coupang_chrome_user_data_dir": config.coupang_chrome_user_data_dir,
+                    "coupang_chrome_profile_directory": config.coupang_chrome_profile_directory,
+                    "coupang_chrome_remote_debugging_port": config.coupang_chrome_remote_debugging_port,
                     "coupang_storage_state_path": config.coupang_storage_state_path,
                     "cart_db_path": config.cart_db_path,
                     "default_currency": config.default_currency,
@@ -209,14 +243,11 @@ def main(argv: list[str] | None = None) -> int:
             score=0.0,
             option_hints=option_hints,
         )
-        page = PlaywrightCoupangCartPage(
-            PlaywrightCoupangSettings(
-                login_url=config.coupang_login_url,
-                cart_url=config.coupang_cart_url,
-                headless=False if parsed.headed else config.coupang_browser_headless,
-                storage_state_path=config.coupang_storage_state_path,
-            )
+        runtime_config = replace(
+            config,
+            coupang_browser_headless=False if parsed.headed else config.coupang_browser_headless,
         )
+        page = build_live_cart_page(runtime_config)
         executor = CoupangCartExecutor(
             page=page,
             credentials=SessionCredentials(
@@ -237,6 +268,7 @@ def main(argv: list[str] | None = None) -> int:
                     "result": asdict(result),
                     "audit_log": [asdict(entry) for entry in executor.audit_log()],
                     "db_path": parsed.db_path or config.cart_db_path,
+                    "launch_mode": config.coupang_browser_launch_mode,
                 },
                 ensure_ascii=False,
                 indent=2,

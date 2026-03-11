@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import shutil
+import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
+import re
 
 from playwright.sync_api import Browser, BrowserContext, Page, Playwright, TimeoutError, sync_playwright
 
@@ -61,6 +65,15 @@ class PlaywrightCoupangSettings:
     navigation_timeout_ms: int = 30000
 
 
+@dataclass(slots=True)
+class ChromeCdpSettings:
+    chrome_user_data_dir: str
+    chrome_profile_directory: str
+    remote_debugging_port: int
+    copied_user_data_dir: str
+    chrome_binary_path: str = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+
+
 class PlaywrightCoupangCartPage:
     """Real browser automation adapter backed by Playwright."""
 
@@ -108,7 +121,7 @@ class PlaywrightCoupangCartPage:
     def open_product(self, product_url: str) -> None:
         page = self._page_object()
         page.goto(product_url, wait_until="domcontentloaded")
-        page.wait_for_load_state("networkidle")
+        page.wait_for_timeout(2500)
 
     def assert_in_stock(self) -> None:
         page = self._page_object()
@@ -142,7 +155,7 @@ class PlaywrightCoupangCartPage:
         cart_page = self._context_object().new_page()
         try:
             cart_page.goto(self._settings.cart_url, wait_until="domcontentloaded")
-            cart_page.wait_for_load_state("networkidle")
+            cart_page.wait_for_timeout(3000)
             count = self._extract_cart_count(cart_page)
             return CartSnapshot(item_count=count, summary=f"cart_count={count}")
         finally:
@@ -152,7 +165,7 @@ class PlaywrightCoupangCartPage:
 
     def add_to_cart(self) -> str:
         button = self._find_add_to_cart_button(optional=False)
-        button.click()
+        self._click_add_to_cart_button(button)
         self._page_object().wait_for_timeout(1500)
         return f"{self._product_slug(self._page_object().url)}:cart-add"
 
@@ -236,12 +249,18 @@ class PlaywrightCoupangCartPage:
         )
         for strategy in strategies:
             value = strategy()
-            if value is not None and value >= 0:
+            if value is not None and value > 0:
                 return value
 
         body = page.locator("body").inner_text(timeout=5000)
         if "장바구니가 비었습니다" in body:
             return 0
+        header_match = re.search(r"장바구니\((\d+)\)", body)
+        if header_match is not None:
+            return int(header_match.group(1))
+        selection_match = re.search(r"\((\d+)\s*/\s*\d+\)", body)
+        if selection_match is not None:
+            return int(selection_match.group(1))
         raise UIElementNotFoundError("Cart item count could not be determined.")
 
     def _count_locator(self, locator) -> int | None:
@@ -303,7 +322,118 @@ class PlaywrightCoupangCartPage:
                 continue
         return None
 
+    def _click_add_to_cart_button(self, button) -> None:
+        attempts = (
+            lambda: button.click(timeout=3000),
+            lambda: button.click(timeout=3000, force=True),
+            lambda: (button.scroll_into_view_if_needed(timeout=3000), button.click(timeout=3000)),
+            lambda: button.evaluate("(element) => element.click()"),
+        )
+        last_error: Exception | None = None
+        for attempt in attempts:
+            try:
+                attempt()
+                return
+            except Exception as exc:
+                last_error = exc
+        assert last_error is not None
+        raise last_error
+
     @staticmethod
     def _product_slug(url: str) -> str:
         trimmed = url.rstrip("/").split("/")[-1]
         return trimmed or "unknown-product"
+
+
+class ChromeCdpCoupangCartPage(PlaywrightCoupangCartPage):
+    """Attach to a locally launched Chrome session over CDP using a copied user profile."""
+
+    def __init__(
+        self,
+        *,
+        settings: PlaywrightCoupangSettings,
+        cdp_settings: ChromeCdpSettings,
+    ) -> None:
+        super().__init__(settings)
+        self._cdp_settings = cdp_settings
+        self._chrome_process: subprocess.Popen[str] | None = None
+
+    def close(self) -> None:
+        try:
+            if self._browser is not None:
+                self._browser.close()
+            if self._playwright_cm is not None:
+                self._playwright_cm.__exit__(None, None, None)
+        finally:
+            if self._chrome_process is not None:
+                self._chrome_process.terminate()
+                try:
+                    self._chrome_process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self._chrome_process.kill()
+            shutil.rmtree(self._cdp_settings.copied_user_data_dir, ignore_errors=True)
+            self._chrome_process = None
+            self._playwright_cm = None
+            self._playwright = None
+            self._browser = None
+            self._context = None
+            self._page = None
+
+    def _page_object(self) -> Page:
+        if self._page is None:
+            self._prepare_copied_profile()
+            self._chrome_process = subprocess.Popen(
+                [
+                    self._cdp_settings.chrome_binary_path,
+                    f"--user-data-dir={self._cdp_settings.copied_user_data_dir}",
+                    f"--profile-directory={self._cdp_settings.chrome_profile_directory}",
+                    f"--remote-debugging-port={self._cdp_settings.remote_debugging_port}",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                    "about:blank",
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                text=True,
+            )
+            self._playwright_cm = sync_playwright()
+            self._playwright = self._playwright_cm.__enter__()
+            self._browser = self._connect_browser_with_retry()
+            self._context = self._browser.contexts[0]
+            self._context.set_default_timeout(self._settings.navigation_timeout_ms)
+            self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
+        return self._page
+
+    def _prepare_copied_profile(self) -> None:
+        root = Path(self._cdp_settings.chrome_user_data_dir)
+        destination = Path(self._cdp_settings.copied_user_data_dir)
+        profile_name = self._cdp_settings.chrome_profile_directory
+        profile_src = root / profile_name
+        profile_dest = destination / profile_name
+        destination.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(root / "Local State", destination / "Local State")
+        shutil.copytree(
+            profile_src,
+            profile_dest,
+            dirs_exist_ok=True,
+            ignore=shutil.ignore_patterns(
+                "Sessions",
+                "Session Storage",
+                "Singleton*",
+                "Lockfile",
+                "*.lock",
+            ),
+        )
+
+    def _connect_browser_with_retry(self) -> Browser:
+        last_error: Exception | None = None
+        endpoint = f"http://127.0.0.1:{self._cdp_settings.remote_debugging_port}"
+        for _ in range(20):
+            try:
+                assert self._playwright is not None
+                return self._playwright.chromium.connect_over_cdp(endpoint)
+            except Exception as exc:
+                last_error = exc
+                time.sleep(0.5)
+        assert last_error is not None
+        raise last_error
