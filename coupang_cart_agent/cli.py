@@ -5,9 +5,11 @@ import json
 import sys
 import time
 from dataclasses import asdict
+from pathlib import Path
 
+from .candidate_sources import CapturedCoupangFixtureCandidateSource, DemoCandidateSource
 from .config import ConfigError, load_config, load_telegram_bot_token
-from .contracts import IntakeMode, ProductCandidate, SelectedProduct
+from .contracts import IntakeMode, RequestedItem, SelectedProduct, ShoppingRequest
 from .cart_executor import CartSnapshot, CoupangCartExecutor, OutOfStockError, SessionCredentials
 from .integration import CoupangCartAgentFlow
 from .notifications import RetryingNotificationService
@@ -170,37 +172,6 @@ def main(argv: list[str] | None = None) -> int:
         def sender(chat_id: str, text: str) -> None:
             delivered_messages.append({"chat_id": chat_id, "text": text})
 
-        def candidate_source(request):
-            candidates_by_item = {}
-            for index, item in enumerate(request.items, start=1):
-                candidates_by_item[item.name] = [
-                    ProductCandidate(
-                        product_id=f"{index}-cheap",
-                        name=f"{item.name} 보급형",
-                        price_krw=5900,
-                        rating=3.8,
-                        review_count=19,
-                        product_url=f"https://www.coupang.com/vp/products/{index}-cheap",
-                    ),
-                    ProductCandidate(
-                        product_id=f"{index}-balanced",
-                        name=f"{item.name} 추천",
-                        price_krw=8900,
-                        rating=4.8,
-                        review_count=1800,
-                        product_url=f"https://www.coupang.com/vp/products/{index}-balanced",
-                    ),
-                    ProductCandidate(
-                        product_id=f"{index}-premium",
-                        name=f"{item.name} 프리미엄",
-                        price_krw=11900,
-                        rating=4.9,
-                        review_count=900,
-                        product_url=f"https://www.coupang.com/vp/products/{index}-premium",
-                    ),
-                ]
-            return candidates_by_item
-
         class DemoPage:
             def __init__(self, *, should_fail: bool) -> None:
                 self._should_fail = should_fail
@@ -232,7 +203,7 @@ def main(argv: list[str] | None = None) -> int:
 
         flow = CoupangCartAgentFlow(
             intake_service=TelegramPollingIntakeService(),
-            candidate_source=candidate_source,
+            candidate_source=DemoCandidateSource(),
             selection_service=HeuristicProductSelectionService(),
             cart_service=CoupangCartExecutor(
                 page=DemoPage(should_fail=parsed.scenario == "cart-failure"),
@@ -261,9 +232,29 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
+    if command == "show-captured-candidates":
+        parser = argparse.ArgumentParser(prog="python -m coupang_cart_agent show-captured-candidates")
+        parser.add_argument(
+            "--fixture-path",
+            default=str(Path("tests/fixtures/coupang_search_onion_fixture.json")),
+        )
+        parser.add_argument("--item-name", default="양파")
+        parsed = parser.parse_args(args[1:])
+        source = CapturedCoupangFixtureCandidateSource(fixture_path=parsed.fixture_path)
+        request = ShoppingRequest(
+            user_id="telegram:cli-user",
+            chat_id="cli-chat",
+            items=[RequestedItem(name=parsed.item_name)],
+            raw_text=f"{parsed.item_name} 담아줘",
+            request_id="captured-fixture-demo",
+        )
+        result = source(request)
+        print(json.dumps({key: [asdict(candidate) for candidate in value] for key, value in result.items()}, ensure_ascii=False, indent=2))
+        return 0
+
     print(
         "Usage: python -m coupang_cart_agent "
-        "[contracts-example|check-config|parse-telegram-message|poll-telegram-once|capture-telegram-live-request|integration-demo]",
+        "[contracts-example|check-config|parse-telegram-message|poll-telegram-once|capture-telegram-live-request|integration-demo|show-captured-candidates]",
         file=sys.stderr,
     )
     return 1

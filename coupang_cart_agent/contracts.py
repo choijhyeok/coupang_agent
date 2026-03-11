@@ -114,6 +114,34 @@ class SelectedProduct:
 
 
 @dataclass(slots=True)
+class PriorPurchaseRecord:
+    """Historical purchase signal loaded before ranking candidates."""
+
+    product_id: str
+    product_name: str
+    purchase_count: int = 1
+    last_purchased_at: datetime | None = None
+    satisfaction_rating: float | None = None
+
+
+@dataclass(slots=True)
+class SessionSelectionSignal:
+    """Recent session signal that can steer selection for one request."""
+
+    product_id: str
+    signal: str
+    noted_at: datetime | None = None
+
+
+@dataclass(slots=True)
+class SelectionContext:
+    """User and session history used to adjust selection scores."""
+
+    prior_purchases: list[PriorPurchaseRecord] = field(default_factory=list)
+    recent_session_signals: list[SessionSelectionSignal] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class CartAddResult:
     """Result from the Coupang cart automation stage."""
 
