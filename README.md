@@ -76,6 +76,8 @@ Shared modules for a Telegram-driven Coupang cart agent. The repository is organ
   Exercises a failure path that stops before checkout and emits a failure notification.
 - `uv run python -m coupang_cart_agent show-captured-candidates --item-name 양파`
   Loads a captured production-shaped candidate fixture and prints normalized candidates.
+- `uv run python -m coupang_cart_agent send-telegram-notification --chat-id <chat_id> --scenario success --database-path <sqlite_db>`
+  Sends a real Telegram success or failure message using the live `sendMessage` path. When `--database-path` is provided, the success payload reads `current_cart_snapshot_items` and `prior_purchases` from SQLite to compose the reply.
 - `uv run python main.py contracts-example`
   Root entrypoint wrapper for local execution.
 
@@ -139,9 +141,7 @@ Live intake persistence stores:
 ## Notifications
 
 The telegram notification module lives in [coupang_cart_agent/notifications.py](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-13/coupang_cart_agent/notifications.py).
-It exposes payload builders aligned with `NotificationPayload`, a bounded
-formatter for concise success and failure messages, and a retrying sender adapter
-for transient delivery failures.
+It exposes payload builders aligned with `NotificationPayload`, a bounded formatter for concise success and failure messages, a Telegram `sendMessage` sender adapter, a retrying delivery service, and a SQLite-backed context reader for `current_cart_snapshot_items` plus `prior_purchases`.
 
 ## Cart Automation Module
 
@@ -207,6 +207,7 @@ Notification-specific validation:
 
 ```bash
 uv run python -m unittest tests.test_notifications
+uv run python -m coupang_cart_agent send-telegram-notification --chat-id <chat_id> --scenario failure
 ```
 
 Integration-specific validation:

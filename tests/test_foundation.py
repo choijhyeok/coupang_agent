@@ -246,6 +246,41 @@ class FoundationTests(unittest.TestCase):
         self.assertIn('"failed_stage": "product_page"', output)
         self.assertIn("장바구니 담기에 실패했습니다.", output)
 
+    def test_cli_send_telegram_notification_uses_live_sender_path(self) -> None:
+        stdout = io.StringIO()
+        delivered: list[tuple[str, str]] = []
+
+        class FakeTelegramBotApiClient:
+            def __init__(self, *, token: str) -> None:
+                self.token = token
+
+            def send_message(self, *, chat_id: str, text: str) -> dict[str, object]:
+                delivered.append((chat_id, text))
+                return {"ok": True}
+
+        with (
+            patch("coupang_cart_agent.cli.load_telegram_bot_token", return_value="test-token"),
+            patch("coupang_cart_agent.cli.TelegramBotApiClient", FakeTelegramBotApiClient),
+            redirect_stdout(stdout),
+        ):
+            exit_code = main(
+                [
+                    "send-telegram-notification",
+                    "--chat-id",
+                    "telegram-chat",
+                    "--scenario",
+                    "failure",
+                    "--failure-stage",
+                    "cart_add",
+                    "--failure-reason",
+                    "품절",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(delivered, [("telegram-chat", "장바구니 담기에 실패했습니다.\n단계: cart_add\n원인: 품절")])
+        self.assertIn('"chat_id": "telegram-chat"', stdout.getvalue())
+
     def test_contract_import_example(self) -> None:
         request = ShoppingRequest(
             user_id="telegram:1",
