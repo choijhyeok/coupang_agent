@@ -6,11 +6,14 @@ from .contracts import (
     CartAddFailureReason,
     CartAddResult,
     CartAddStage,
+    IntakeMode,
     NotificationPayload,
     ProductCandidate,
     RequestedItem,
+    RequestSession,
     SelectedProduct,
     ShoppingRequest,
+    ShoppingRequestEnvelope,
 )
 from .selection import (
     HeuristicProductSelectionService,
@@ -35,6 +38,7 @@ from .telegram_intake import (
     TelegramIntakeResult,
     TelegramPollingIntakeService,
 )
+from .telegram_persistence import TelegramIntakeRepository
 
 __all__ = [
     "AppConfig",
@@ -44,15 +48,18 @@ __all__ = [
     "ConfigError",
     "CoupangCartExecutor",
     "CoupangCartAgentFlow",
+    "IntakeMode",
     "NotificationPayload",
     "NotificationDeliveryError",
     "ProductCandidate",
     "RequestedItem",
+    "RequestSession",
     "RetryingNotificationService",
     "IntegrationRunResult",
     "SessionCredentials",
     "SelectedProduct",
     "ShoppingRequest",
+    "ShoppingRequestEnvelope",
     "build_failure_notification_payload",
     "build_success_notification_payload",
     "format_notification_message",
@@ -61,6 +68,7 @@ __all__ = [
     "TelegramInboundMessage",
     "TelegramIntakeError",
     "TelegramIntakeResult",
+    "TelegramIntakeRepository",
     "TelegramPollingIntakeService",
     "load_config",
     "normalize_candidate",

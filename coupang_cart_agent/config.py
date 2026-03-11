@@ -19,6 +19,24 @@ class AppConfig:
     default_currency: str = "KRW"
 
 
+def load_telegram_bot_token(
+    env: dict[str, str] | None = None,
+    *,
+    dotenv_path: str | os.PathLike[str] = ".env",
+) -> str:
+    source = {
+        **_load_dotenv_values(dotenv_path),
+        **(dict(os.environ) if env is None else env),
+    }
+    token = source.get("TELEGRAM_BOT_TOKEN", "").strip()
+    if not token:
+        raise ConfigError(
+            "Missing required configuration: TELEGRAM_BOT_TOKEN. "
+            "Set it in the environment or .env before running."
+        )
+    return token
+
+
 def _load_dotenv_values(dotenv_path: str | os.PathLike[str] = ".env") -> dict[str, str]:
     path = Path(dotenv_path)
     if not path.exists():

@@ -65,7 +65,7 @@ Shared modules for a Telegram-driven Coupang cart agent. The repository is organ
 - `uv run python -m coupang_cart_agent parse-telegram-message "콜라 제로 2개 담아줘"`
   Parses a Telegram-style shopping request into the shared `ShoppingRequest` contract.
 - `uv run python -m coupang_cart_agent poll-telegram-once --timeout 1`
-  Uses Telegram Bot API long polling once and prints parsed requests or user-facing errors.
+  Uses Telegram Bot API long polling once, persists inbound/session records, and prints live intake envelopes or user-facing errors.
 - `uv run python -m coupang_cart_agent integration-demo "콜라 제로 2개 담아줘" --scenario success`
   Runs a local end-to-end proof across intake, selection, cart execution, and notification with deterministic demo doubles.
 - `uv run python -m coupang_cart_agent integration-demo "삼다수 1박스 담아줘" --scenario cart-failure`
@@ -79,6 +79,8 @@ The following contracts are shared across modules:
 
 - `RequestedItem`
 - `ShoppingRequest`
+- `RequestSession`
+- `ShoppingRequestEnvelope`
 - `ProductCandidate`
 - `SelectedProduct`
 - `CartAddResult`
@@ -100,7 +102,8 @@ Downstream modules should implement the protocols in [coupang_cart_agent/service
 [coupang_cart_agent/telegram_intake.py](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-13/coupang_cart_agent/telegram_intake.py) provides a production-shaped intake implementation for HOW-8.
 
 - `TelegramBotApiClient`: minimal Telegram Bot API client using long polling.
-- `TelegramPollingIntakeService`: extracts Telegram updates, parses `... 담아줘` messages, and returns `ShoppingRequest` or a concise error response.
+- `TelegramPollingIntakeService`: keeps the demo parser path separate from the production long-polling path, parses `... 담아줘` messages, persists inbound/session records, and returns a LangGraph-ready `ShoppingRequestEnvelope`.
+- `TelegramIntakeRepository`: SQLite-backed storage for Telegram session and inbound request records.
 
 Supported parsing rules:
 
@@ -108,6 +111,12 @@ Supported parsing rules:
 - optional constraints through parentheses or `옵션:` / `조건:`
 - optional price cap such as `20000원 이하`
 - multiple requested items separated by newlines, `;`, or `그리고`
+
+Live intake persistence stores:
+
+- stable `session_id` linked to `user_id` and `chat_id`
+- inbound message rows with parse status, raw update payload, and normalized `request_id`
+- enough envelope metadata to hand the request into LangGraph state without reshaping
 
 ## Selection Engine
 
@@ -174,6 +183,7 @@ Additional module proofs:
 
 ```bash
 uv run python -m coupang_cart_agent parse-telegram-message "삼다수 2L 1박스 옵션: 무라벨 담아줘"
+uv run python -m coupang_cart_agent poll-telegram-once --timeout 1 --db-path .artifacts/telegram_intake.sqlite3
 uv run python -m unittest tests.test_selection
 ```
 

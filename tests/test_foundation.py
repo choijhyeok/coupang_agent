@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import io
+import os
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 from coupang_cart_agent.cart_executor import (
     CartSnapshot,
@@ -16,7 +18,7 @@ from coupang_cart_agent.cart_executor import (
     UIElementNotFoundError,
 )
 from coupang_cart_agent.cli import main
-from coupang_cart_agent.config import ConfigError, load_config
+from coupang_cart_agent.config import ConfigError, load_config, load_telegram_bot_token
 from coupang_cart_agent.contracts import (
     CartAddFailureReason,
     CartAddStage,
@@ -93,6 +95,15 @@ class FoundationTests(unittest.TestCase):
         self.assertEqual(config.coupang_username, "env-user")
         self.assertEqual(config.coupang_password, "env-password")
 
+    def test_load_telegram_bot_token_reads_only_bot_token(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            dotenv_path = Path(tmp_dir) / ".env"
+            dotenv_path.write_text("TELEGRAM_BOT_TOKEN=test-bot-token", encoding="utf-8")
+
+            token = load_telegram_bot_token({}, dotenv_path=dotenv_path)
+
+        self.assertEqual(token, "test-bot-token")
+
     def test_cli_contracts_example_runs(self) -> None:
         stdout = io.StringIO()
         with redirect_stdout(stdout):
@@ -104,12 +115,22 @@ class FoundationTests(unittest.TestCase):
     def test_cli_check_config_reports_missing_values(self) -> None:
         stdout = io.StringIO()
         stderr = io.StringIO()
-        with redirect_stdout(stdout), redirect_stderr(stderr):
+        with patch.dict(os.environ, {}, clear=True), redirect_stdout(stdout), redirect_stderr(stderr):
             exit_code = main(["check-config"])
 
         self.assertEqual(exit_code, 1)
         self.assertEqual(stdout.getvalue(), "")
         self.assertIn("Missing required configuration", stderr.getvalue())
+
+    def test_cli_poll_telegram_once_reports_missing_bot_token_only(self) -> None:
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with patch.dict(os.environ, {}, clear=True), redirect_stdout(stdout), redirect_stderr(stderr):
+            exit_code = main(["poll-telegram-once", "--timeout", "1"])
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("TELEGRAM_BOT_TOKEN", stderr.getvalue())
 
     def test_cli_integration_demo_success_runs_end_to_end_proof(self) -> None:
         stdout = io.StringIO()

@@ -5,14 +5,15 @@ import json
 import sys
 from dataclasses import asdict
 
-from .config import ConfigError, load_config
-from .contracts import ProductCandidate, SelectedProduct
+from .config import ConfigError, load_config, load_telegram_bot_token
+from .contracts import IntakeMode, ProductCandidate, SelectedProduct
 from .cart_executor import CartSnapshot, CoupangCartExecutor, OutOfStockError, SessionCredentials
 from .integration import CoupangCartAgentFlow
 from .notifications import RetryingNotificationService
 from .selection import HeuristicProductSelectionService
 from .contracts import demo_contract_payload
 from .telegram_intake import TelegramBotApiClient, TelegramPollingIntakeService
+from .telegram_persistence import TelegramIntakeRepository
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -51,7 +52,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.add_argument("--chat-id", default="cli-chat")
         parsed = parser.parse_args(args[1:])
         service = TelegramPollingIntakeService()
-        request = service.parse_message(
+        request = service.parse_demo_message(
             user_id=parsed.user_id,
             chat_id=parsed.chat_id,
             text=parsed.text,
@@ -63,19 +64,31 @@ def main(argv: list[str] | None = None) -> int:
         parser = argparse.ArgumentParser(prog="python -m coupang_cart_agent poll-telegram-once")
         parser.add_argument("--offset", type=int, default=None)
         parser.add_argument("--timeout", type=int, default=1)
+        parser.add_argument("--db-path", default=".artifacts/telegram_intake.sqlite3")
+        parser.add_argument("--skip-error-response", action="store_true")
         parsed = parser.parse_args(args[1:])
         try:
-            config = load_config()
+            token = load_telegram_bot_token()
         except ConfigError as exc:
             print(str(exc), file=sys.stderr)
             return 1
         service = TelegramPollingIntakeService(
-            TelegramBotApiClient(token=config.telegram_bot_token)
+            TelegramBotApiClient(token=token),
+            TelegramIntakeRepository(parsed.db_path),
         )
-        results = service.poll_once(offset=parsed.offset, timeout=parsed.timeout)
+        results = service.poll_once(
+            offset=parsed.offset,
+            timeout=parsed.timeout,
+            mode=IntakeMode.LIVE,
+            send_error_response=not parsed.skip_error_response,
+        )
         print(
             json.dumps(
-                [result.as_dict() for result in results],
+                {
+                    "mode": "live",
+                    "db_path": parsed.db_path,
+                    "results": [result.as_dict() for result in results],
+                },
                 ensure_ascii=False,
                 indent=2,
                 default=str,
