@@ -53,7 +53,7 @@
 - DB-backed message validation is covered by `tests.test_notifications.NotificationTests.test_sqlite_notification_context_store_loads_snapshot_and_prior_purchase_rows` and `test_success_message_uses_db_snapshot_and_prior_purchase_context_when_provided`.
 - Publish:
   - Branch: `how-18-telegram-notifications`
-  - Commit: `5df5ee4`
+  - Commit: branch tip on `origin/how-18-telegram-notifications`
   - Push: `git push -u origin how-18-telegram-notifications`
   - PR: `https://github.com/choijhyeok/coupang_agent/pull/11`
 
