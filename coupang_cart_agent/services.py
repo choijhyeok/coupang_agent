@@ -6,6 +6,7 @@ from .contracts import (
     CartAddResult,
     NotificationPayload,
     ProductCandidate,
+    SelectionContext,
     SelectedProduct,
     ShoppingRequest,
 )
@@ -25,6 +26,12 @@ class ProductSelectionService(Protocol):
         request: ShoppingRequest,
         candidates_by_item: dict[str, list[ProductCandidate]],
     ) -> list[SelectedProduct]: ...
+
+
+class SelectionContextStore(Protocol):
+    """Load prior purchase and recent session context for selection."""
+
+    def load(self, request: ShoppingRequest) -> SelectionContext: ...
 
 
 class CoupangCartService(Protocol):
