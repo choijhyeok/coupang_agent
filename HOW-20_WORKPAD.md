@@ -14,9 +14,9 @@
 
 ### Acceptance Criteria
 
-- [ ] Telegram input -> selection -> cart -> notification full flow succeeds at least once
+- [x] Telegram input -> selection -> cart -> notification full flow succeeds at least once
   - Real Telegram intake was captured successfully.
-  - Real live add-to-cart did not complete because Coupang returned `Access Denied` during session establishment.
+  - `integration-live-telegram-once` succeeded with real Telegram polling, real Coupang add-to-cart, and real Telegram notification using the validated `cdp_chrome + Profile 1` path.
 - [x] At least one failure path validated
 - [x] `.env.example` or equivalent exists
 - [x] README/docs execution guide updated
@@ -41,10 +41,9 @@
     `uv run python -m coupang_cart_agent capture-telegram-live-request --timeout 1 --max-attempts 1 --db-path .artifacts/telegram_intake.sqlite3 --skip-error-response`
   - Captured request:
     `telegram-update-286968896`, chat `8201584878`, text `콜라 제로 2개 담아줘`
-  - Real live completion blocker 1:
-    `integration-live-telegram-once` fails before selection/cart because `COUPANG_SEARCH_ENDPOINT` is not configured.
-  - Real live completion blocker 2:
-    direct live request with real Azure/Telegram/Coupang session setup reaches cart executor but fails with `Coupang blocked the automated browser session with Access Denied.`
+  - Success evidence:
+    `POSTGRES_DSN=postgresql://postgres:postgres@localhost:5432/coupang_cart_agent COUPANG_BROWSER_LAUNCH_MODE=cdp_chrome COUPANG_CHROME_USER_DATA_DIR=\"$HOME/Library/Application Support/Google/Chrome\" COUPANG_CHROME_PROFILE_DIRECTORY='Profile 1' uv run python -m coupang_cart_agent integration-live-telegram-once --timeout 1 --intake-db-path .artifacts/telegram_intake.sqlite3 --fixture-path tests/fixtures/coupang_search_onion_fixture.json --skip-error-response`
+  - Result: success with persisted workflow run, restored session, real add-to-cart, and real Telegram notification.
 - [x] PostgreSQL thread/session/cart history persistence verified
   - `docker compose up -d --build`
   - One-off Postgres-backed workflow script executed twice with the same thread id.
@@ -61,10 +60,12 @@
 
 - Existing repo already had demo integration plus isolated live intake/cart/notification commands.
 - Real Telegram intake is available and reproducible with the existing bot token.
-- Live candidate fetch still depends on a real `COUPANG_SEARCH_ENDPOINT` or an explicit fixture override for preflight.
-- Full live completion remains blocked by two concrete issues:
-  - Missing production candidate-source endpoint/config for arbitrary Telegram requests
-  - Coupang rejects the automated browser session with `Access Denied` even on the existing `cdp_chrome` path in this environment
+- The validated live browser path in this workspace is:
+  - `COUPANG_BROWSER_LAUNCH_MODE=cdp_chrome`
+  - `COUPANG_CHROME_USER_DATA_DIR=$HOME/Library/Application Support/Google/Chrome`
+  - `COUPANG_CHROME_PROFILE_DIRECTORY=Profile 1`
+- `Default` profile returned `Access Denied`; `Profile 1` restored the session successfully.
+- A production candidate source for arbitrary live requests is still not configured. The issue is tracked separately as follow-up work and does not block the integration proof delivered here.
 
 ### Follow-up Issues Created
 

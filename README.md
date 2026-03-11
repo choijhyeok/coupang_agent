@@ -112,6 +112,16 @@ uv run python -m coupang_cart_agent integration-live-request \
 
 That preflight path still uses LangGraph, PostgreSQL, Azure OpenAI, Coupang cart automation, and Telegram notifications, but it does not satisfy a real live candidate-fetch validation by itself.
 
+Validated live browser path on March 11, 2026:
+
+```bash
+COUPANG_BROWSER_LAUNCH_MODE=cdp_chrome
+COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome"
+COUPANG_CHROME_PROFILE_DIRECTORY="Profile 1"
+```
+
+`Default` returned `Access Denied` in this workspace. `Profile 1` restored the authenticated Coupang session and completed add-to-cart successfully.
+
 ## Docker Compose
 
 `docker compose up` starts a PostgreSQL container and an app container exposing health and demo smoke endpoints.
@@ -197,6 +207,13 @@ uv run python -m coupang_cart_agent check-config
 uv run python -m coupang_cart_agent integration-live-request "양파 1개 담아줘" --fixture-path tests/fixtures/coupang_search_onion_fixture.json
 uv run python -m coupang_cart_agent integration-live-telegram-once --timeout 10
 ```
+
+Recorded live validation evidence on March 11, 2026:
+
+- Real Telegram intake capture succeeded for `telegram-update-286968896` with text `콜라 제로 2개 담아줘`
+- Real Telegram -> selection -> Coupang add-to-cart -> Telegram notification succeeded with:
+  `integration-live-telegram-once --timeout 1 --intake-db-path .artifacts/telegram_intake.sqlite3 --fixture-path tests/fixtures/coupang_search_onion_fixture.json`
+- The remaining gap is a production candidate source for arbitrary live requests, tracked separately in `HOW-21`
 
 ## Notes
 
