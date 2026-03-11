@@ -73,6 +73,6 @@
 ### Publish
 
 - Branch: `how-20-live-integration-validation`
-- Commit: `6018e1a11afcfff7bb453f2a5dfe3bb906887f5c`
+- Commit: `895c5a0cd376ac576869ec511ea5915ed07ffe9e`
 - Push: `git push -u origin how-20-live-integration-validation`
 - PR: https://github.com/choijhyeok/coupang_agent/pull/12
