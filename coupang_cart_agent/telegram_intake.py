@@ -10,7 +10,8 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from .contracts import RequestedItem, ShoppingRequest
+from .contracts import IntakeMode, RequestedItem, RequestSession, ShoppingRequest, ShoppingRequestEnvelope
+from .telegram_persistence import TelegramIntakeRepository
 
 
 class TelegramIntakeError(ValueError):
@@ -22,9 +23,11 @@ class TelegramInboundMessage:
     """Normalized Telegram message envelope extracted from an update payload."""
 
     update_id: int
+    message_id: int | None
     user_id: str
     chat_id: str
     text: str
+    received_at: datetime
 
 
 @dataclass(slots=True)
@@ -34,14 +37,18 @@ class TelegramIntakeResult:
     update_id: int
     chat_id: str | None
     request: ShoppingRequest | None = None
+    envelope: ShoppingRequestEnvelope | None = None
     error_message: str | None = None
+    error_response_sent: bool = False
 
     def as_dict(self) -> dict[str, object]:
         return {
             "update_id": self.update_id,
             "chat_id": self.chat_id,
             "request": asdict(self.request) if self.request is not None else None,
+            "envelope": asdict(self.envelope) if self.envelope is not None else None,
             "error_message": self.error_message,
+            "error_response_sent": self.error_response_sent,
         }
 
 
@@ -65,6 +72,10 @@ class TelegramBotApiClient:
             payload["offset"] = offset
         response = self._post("getUpdates", payload)
         return list(response.get("result", []))
+
+    def get_me(self) -> dict[str, Any]:
+        response = self._post("getMe", {})
+        return dict(response.get("result", {}))
 
     def send_message(self, *, chat_id: str, text: str) -> dict[str, Any]:
         return self._post("sendMessage", {"chat_id": chat_id, "text": text})
@@ -103,8 +114,13 @@ class TelegramPollingIntakeService:
     _TRAILING_SEPARATOR_PATTERN = re.compile(r"(?:\n|;|,|\s그리고)\s*$")
     _CONSTRAINT_MARKERS = ("옵션", "조건")
 
-    def __init__(self, client: TelegramBotApiClient | None = None) -> None:
+    def __init__(
+        self,
+        client: TelegramBotApiClient | None = None,
+        repository: TelegramIntakeRepository | None = None,
+    ) -> None:
         self._client = client
+        self._repository = repository
 
     def parse_message(self, *, user_id: str, chat_id: str, text: str) -> ShoppingRequest:
         normalized_text = self._normalize_message_text(text)
@@ -118,6 +134,9 @@ class TelegramPollingIntakeService:
             request_id=f"telegram-request-{uuid4()}",
             received_at=datetime.now(UTC),
         )
+
+    def parse_demo_message(self, *, user_id: str, chat_id: str, text: str) -> ShoppingRequest:
+        return self.parse_message(user_id=user_id, chat_id=chat_id, text=text)
 
     def extract_inbound_message(self, update: dict[str, Any]) -> TelegramInboundMessage:
         update_id = int(update.get("update_id", 0))
@@ -134,17 +153,31 @@ class TelegramPollingIntakeService:
         sender_id = sender.get("id")
         if chat_id is None or sender_id is None:
             raise TelegramIntakeError("텔레그램 메시지 메타데이터가 부족합니다.")
+        message_id = message.get("message_id")
+        message_date = message.get("date")
+        received_at = datetime.now(UTC)
+        if isinstance(message_date, int):
+            received_at = datetime.fromtimestamp(message_date, tz=UTC)
 
         return TelegramInboundMessage(
             update_id=update_id,
+            message_id=int(message_id) if isinstance(message_id, int) else None,
             user_id=f"telegram:{sender_id}",
             chat_id=str(chat_id),
             text=text.strip(),
+            received_at=received_at,
         )
 
-    def handle_update(self, update: dict[str, Any]) -> TelegramIntakeResult:
+    def handle_update(
+        self,
+        update: dict[str, Any],
+        *,
+        mode: IntakeMode = IntakeMode.LIVE,
+        send_error_response: bool = True,
+    ) -> TelegramIntakeResult:
         update_id = int(update.get("update_id", 0))
         chat_id = None
+        error_response_sent = False
         try:
             inbound = self.extract_inbound_message(update)
             chat_id = inbound.chat_id
@@ -154,32 +187,165 @@ class TelegramPollingIntakeService:
                 text=inbound.text,
             )
             request.request_id = f"telegram-update-{inbound.update_id}"
+            request.received_at = inbound.received_at
+            envelope = self._build_envelope(
+                inbound=inbound,
+                request=request,
+                mode=mode,
+                raw_update=update,
+            )
+            if self._repository is not None:
+                self._repository.record_envelope(envelope)
             return TelegramIntakeResult(
                 update_id=inbound.update_id,
                 chat_id=inbound.chat_id,
                 request=request,
+                envelope=envelope,
             )
         except TelegramIntakeError as exc:
-            message = update.get("message")
-            if isinstance(message, dict):
-                chat = message.get("chat") or {}
-                if chat.get("id") is not None:
-                    chat_id = str(chat["id"])
+            context = self._extract_error_context(update)
+            if context["chat_id"] is not None:
+                chat_id = str(context["chat_id"])
+            error_message = self.build_error_message(str(exc))
+            session = None
+            if self._repository is not None and context["user_id"] and context["chat_id"]:
+                session = self._repository.get_or_create_session(
+                    user_id=str(context["user_id"]),
+                    chat_id=str(context["chat_id"]),
+                    occurred_at=context["received_at"],
+                )
+                self._repository.record_rejected_message(
+                    inbound_message_id=self._build_inbound_message_id(
+                        update_id=context["update_id"],
+                        message_id=context["message_id"],
+                    ),
+                    session=session,
+                    update_id=context["update_id"],
+                    message_id=context["message_id"],
+                    user_id=str(context["user_id"]),
+                    chat_id=str(context["chat_id"]),
+                    raw_text=str(context["raw_text"]),
+                    error_message=error_message,
+                    raw_update=update,
+                    occurred_at=context["received_at"],
+                    mode=mode.value,
+                )
+            if send_error_response and self._client is not None and chat_id is not None:
+                self._client.send_message(chat_id=chat_id, text=error_message)
+                error_response_sent = True
             return TelegramIntakeResult(
                 update_id=update_id,
                 chat_id=chat_id,
-                error_message=self.build_error_message(str(exc)),
+                error_message=error_message,
+                error_response_sent=error_response_sent,
             )
 
-    def poll_once(self, *, offset: int | None = None, timeout: int = 30) -> list[TelegramIntakeResult]:
+    def poll_once(
+        self,
+        *,
+        offset: int | None = None,
+        timeout: int = 30,
+        mode: IntakeMode = IntakeMode.LIVE,
+        send_error_response: bool = True,
+    ) -> list[TelegramIntakeResult]:
         if self._client is None:
             raise RuntimeError("Telegram client is required for polling.")
         updates = self._client.get_updates(offset=offset, timeout=timeout)
-        return [self.handle_update(update) for update in updates]
+        return [
+            self.handle_update(update, mode=mode, send_error_response=send_error_response)
+            for update in updates
+        ]
 
     @staticmethod
     def build_error_message(detail: str) -> str:
         return f"{detail} 형식 예시: 콜라 제로 2개 담아줘"
+
+    def _build_envelope(
+        self,
+        *,
+        inbound: TelegramInboundMessage,
+        request: ShoppingRequest,
+        mode: IntakeMode,
+        raw_update: dict[str, Any],
+    ) -> ShoppingRequestEnvelope:
+        session = self._build_session(inbound)
+        if self._repository is not None:
+            session = self._repository.get_or_create_session(
+                user_id=inbound.user_id,
+                chat_id=inbound.chat_id,
+                occurred_at=inbound.received_at,
+            )
+        return ShoppingRequestEnvelope(
+            source="telegram",
+            mode=mode,
+            request=request,
+            session=session,
+            inbound_message_id=self._build_inbound_message_id(
+                update_id=inbound.update_id,
+                message_id=inbound.message_id,
+            ),
+            update_id=inbound.update_id,
+            message_id=inbound.message_id,
+            raw_text=inbound.text,
+            raw_update=dict(raw_update),
+            metadata={
+                "chat_id": inbound.chat_id,
+                "user_id": inbound.user_id,
+                "session_id": session.session_id,
+            },
+        )
+
+    @staticmethod
+    def _build_session(inbound: TelegramInboundMessage) -> RequestSession:
+        session_id = TelegramIntakeRepository.build_session_id(
+            user_id=inbound.user_id,
+            chat_id=inbound.chat_id,
+        )
+        return RequestSession(
+            session_id=session_id,
+            channel="telegram",
+            user_id=inbound.user_id,
+            chat_id=inbound.chat_id,
+            created_at=inbound.received_at,
+            last_message_at=inbound.received_at,
+        )
+
+    @staticmethod
+    def _build_inbound_message_id(*, update_id: int | None, message_id: int | None) -> str:
+        if update_id is not None:
+            return f"telegram-update-{update_id}"
+        if message_id is not None:
+            return f"telegram-message-{message_id}"
+        return f"telegram-inbound-{uuid4()}"
+
+    @staticmethod
+    def _extract_error_context(update: dict[str, Any]) -> dict[str, Any]:
+        message = update.get("message")
+        received_at = datetime.now(UTC)
+        if not isinstance(message, dict):
+            return {
+                "update_id": int(update.get("update_id", 0)) or None,
+                "message_id": None,
+                "user_id": None,
+                "chat_id": None,
+                "raw_text": "",
+                "received_at": received_at,
+            }
+        message_date = message.get("date")
+        if isinstance(message_date, int):
+            received_at = datetime.fromtimestamp(message_date, tz=UTC)
+        chat = message.get("chat") or {}
+        sender = message.get("from") or {}
+        sender_id = sender.get("id")
+        user_id = f"telegram:{sender_id}" if sender_id is not None else None
+        return {
+            "update_id": int(update.get("update_id", 0)) or None,
+            "message_id": int(message["message_id"]) if isinstance(message.get("message_id"), int) else None,
+            "user_id": user_id,
+            "chat_id": str(chat["id"]) if chat.get("id") is not None else None,
+            "raw_text": message.get("text", ""),
+            "received_at": received_at,
+        }
 
     def _normalize_message_text(self, text: str) -> str:
         stripped = re.sub(r"[^\S\n]+", " ", text.strip())

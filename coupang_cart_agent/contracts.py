@@ -35,6 +35,13 @@ class RequestedItem:
     max_price_krw: int | None = None
 
 
+class IntakeMode(StrEnum):
+    """Operational mode for request intake."""
+
+    DEMO = "demo"
+    LIVE = "live"
+
+
 @dataclass(slots=True)
 class ShoppingRequest:
     """Normalized shopping request passed into the selection pipeline."""
@@ -45,6 +52,40 @@ class ShoppingRequest:
     raw_text: str
     request_id: str = "sample-request"
     received_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+
+@dataclass(slots=True)
+class RequestSession:
+    """Stable session identity linked to persisted inbound requests."""
+
+    session_id: str
+    channel: str
+    user_id: str
+    chat_id: str
+    created_at: datetime
+    last_message_at: datetime
+
+
+@dataclass(slots=True)
+class ShoppingRequestEnvelope:
+    """Envelope passed into workflow state for production intake."""
+
+    source: str
+    mode: IntakeMode
+    request: ShoppingRequest
+    session: RequestSession
+    inbound_message_id: str
+    update_id: int | None = None
+    message_id: int | None = None
+    raw_text: str = ""
+    raw_update: dict[str, object] = field(default_factory=dict)
+    metadata: dict[str, object] = field(default_factory=dict)
+
+    def as_langgraph_state(self) -> dict[str, object]:
+        return {
+            "request": asdict(self.request),
+            "request_envelope": asdict(self),
+        }
 
 
 @dataclass(slots=True)
