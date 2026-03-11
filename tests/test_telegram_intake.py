@@ -184,6 +184,7 @@ class TelegramIntakeTests(unittest.TestCase):
             self.assertEqual(len(sessions), 1)
             self.assertEqual(sessions[0]["session_id"], "telegram-session:902:telegram:901")
             self.assertEqual(inbound_messages[0]["parse_status"], "rejected")
+            self.assertEqual(inbound_messages[0]["workflow_status"], "rejected")
             self.assertEqual(inbound_messages[0]["error_message"], result.error_message)
 
     def test_handle_update_persists_session_and_envelope_for_valid_message(self) -> None:
@@ -208,11 +209,52 @@ class TelegramIntakeTests(unittest.TestCase):
             inbound_messages = repository.list_inbound_messages()
             self.assertEqual(len(inbound_messages), 1)
             self.assertEqual(inbound_messages[0]["parse_status"], "parsed")
+            self.assertEqual(inbound_messages[0]["workflow_status"], "pending")
             self.assertEqual(inbound_messages[0]["request_id"], "telegram-update-1005")
             self.assertEqual(inbound_messages[0]["session_id"], "telegram-session:888:telegram:777")
+            self.assertIsNotNone(inbound_messages[0]["envelope"])
             sessions = repository.list_sessions()
             self.assertEqual(sessions[0]["chat_id"], "888")
             self.assertEqual(sessions[0]["user_id"], "telegram:777")
+
+    def test_repository_persists_and_restores_worker_cursor_and_pending_envelopes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repository = TelegramIntakeRepository(Path(tmp_dir) / "intake.sqlite3")
+            service = TelegramPollingIntakeService(repository=repository)
+            result = service.handle_update(
+                {
+                    "update_id": 1008,
+                    "message": {
+                        "message_id": 18,
+                        "date": 1710000020,
+                        "from": {"id": 778},
+                        "chat": {"id": 889},
+                        "text": "휴지 3개 담아줘",
+                    },
+                }
+            )
+            assert result.envelope is not None
+
+            repository.save_worker_cursor(
+                worker_name="worker-a",
+                next_offset=1009,
+                last_update_id=1008,
+                last_result_json={"captured": 1},
+            )
+            pending = repository.load_pending_envelopes(limit=10)
+
+            self.assertEqual(len(pending), 1)
+            self.assertEqual(pending[0].inbound_message_id, "telegram-update-1008")
+            self.assertEqual(repository.load_worker_cursor(worker_name="worker-a"), 1009)
+
+            repository.mark_envelope_processing(inbound_message_id="telegram-update-1008")
+            repository.mark_envelope_completed(
+                inbound_message_id="telegram-update-1008",
+                workflow_error="cart_add: blocked",
+            )
+            inbound_messages = repository.list_inbound_messages()
+            self.assertEqual(inbound_messages[0]["workflow_status"], "completed")
+            self.assertEqual(inbound_messages[0]["workflow_error"], "cart_add: blocked")
 
     def test_poll_once_fetches_updates_through_bot_api(self) -> None:
         captured_request: dict[str, object] = {}

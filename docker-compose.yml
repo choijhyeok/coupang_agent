@@ -53,5 +53,38 @@ services:
       timeout: 5s
       retries: 10
 
+  worker:
+    build:
+      context: .
+    profiles: ["live"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    environment:
+      POSTGRES_DSN: postgresql://postgres:postgres@postgres:5432/coupang_cart_agent
+      COUPANG_BROWSER_LAUNCH_MODE: browser_use
+      COUPANG_CHROME_USER_DATA_DIR: /operator-chrome
+      COUPANG_CHROME_PROFILE_DIRECTORY: Profile 1
+    volumes:
+      - ./.artifacts:/app/.artifacts
+      - ./.data:/app/.data
+      - ${COUPANG_CHROME_USER_DATA_DIR_HOST:-/tmp/operator-chrome}:/operator-chrome:ro
+    command:
+      [
+        "uv",
+        "run",
+        "python",
+        "-m",
+        "coupang_cart_agent",
+        "integration-live-telegram-worker",
+        "--timeout",
+        "30",
+        "--sleep-seconds",
+        "1",
+        "--intake-db-path",
+        ".artifacts/telegram_intake.sqlite3"
+      ]
+
 volumes:
   postgres-data:

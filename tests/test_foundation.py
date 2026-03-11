@@ -70,7 +70,7 @@ class FoundationTests(unittest.TestCase):
         self.assertEqual(config.coupang_password, "test-password")
         self.assertEqual(config.cart_db_path, ".data/cart_results.sqlite3")
         self.assertTrue(config.coupang_browser_headless)
-        self.assertEqual(config.coupang_browser_launch_mode, "playwright")
+        self.assertEqual(config.coupang_browser_launch_mode, "browser_use")
         self.assertIsNone(config.coupang_chrome_user_data_dir)
         self.assertEqual(config.coupang_chrome_profile_directory, "Default")
         self.assertEqual(config.coupang_chrome_remote_debugging_port, 9223)

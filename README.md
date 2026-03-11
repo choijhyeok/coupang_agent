@@ -67,6 +67,11 @@ uv run python -m coupang_cart_agent integration-live-request \
 uv run python -m coupang_cart_agent integration-live-telegram-once \
   --timeout 10 \
   --intake-db-path .artifacts/telegram_intake.sqlite3
+
+uv run python -m coupang_cart_agent integration-live-telegram-worker \
+  --timeout 30 \
+  --sleep-seconds 1 \
+  --intake-db-path .artifacts/telegram_intake.sqlite3
 ```
 
 `integration-live-request` bypasses Telegram network polling but still runs the LangGraph, Azure OpenAI, PostgreSQL, Coupang, and Telegram-notification path.
@@ -79,6 +84,14 @@ uv run python -m coupang_cart_agent integration-live-telegram-once \
 4. add the selected product to the Coupang cart
 5. send a Telegram notification
 6. persist workflow state and cart/session history to PostgreSQL
+
+`integration-live-telegram-worker` is the always-on operator path:
+
+1. restore the previous `next_offset` and any pending envelopes from the Telegram intake SQLite DB
+2. long-poll Telegram for new `~~~ 담아줘` messages
+3. persist each parsed envelope before workflow execution
+4. run the LangGraph live workflow for each pending envelope
+5. persist worker cursor and per-message completion state so restarts resume safely
 
 ## Environment
 
@@ -115,12 +128,14 @@ That preflight path still uses LangGraph, PostgreSQL, Azure OpenAI, Coupang cart
 Validated live browser path on March 11, 2026:
 
 ```bash
-COUPANG_BROWSER_LAUNCH_MODE=cdp_chrome
+COUPANG_BROWSER_LAUNCH_MODE=browser_use
 COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome"
 COUPANG_CHROME_PROFILE_DIRECTORY="Profile 1"
 ```
 
-`Default` returned `Access Denied` in this workspace. `Profile 1` restored the authenticated Coupang session and completed add-to-cart successfully.
+The `browser_use` mode is the preferred live path in this repository. It uses a copied real Chrome profile over CDP so the worker runs with an operator-approved session instead of a fresh Playwright context.
+
+`Default` returned `Access Denied` in this workspace. `Profile 1` restored the authenticated Coupang session and completed add-to-cart successfully. Keep `playwright` only as a debugging fallback for selector work, not as the primary live path.
 
 ## Docker Compose
 
@@ -140,6 +155,15 @@ uv run python -m coupang_cart_agent serve-http --host 0.0.0.0 --port 8080
 
 The HTTP server is for health and smoke validation. Operators should run the live integration commands explicitly when real credentials and access are available.
 
+Draft live worker service:
+
+```bash
+COUPANG_CHROME_USER_DATA_DIR_HOST="$HOME/Library/Application Support/Google/Chrome" \
+docker compose --profile live up -d worker
+```
+
+The `worker` service expects a trusted Chrome profile bind-mounted from the host into `/operator-chrome`, and it reuses `.artifacts/telegram_intake.sqlite3` plus PostgreSQL state so restarts can resume from the last processed Telegram offset.
+
 ## Other Commands
 
 ```bash
@@ -147,6 +171,7 @@ uv run python -m coupang_cart_agent check-config
 uv run python -m coupang_cart_agent parse-telegram-message "콜라 제로 2개 담아줘"
 uv run python -m coupang_cart_agent poll-telegram-once --timeout 1
 uv run python -m coupang_cart_agent capture-telegram-live-request --timeout 30 --max-attempts 10
+uv run python -m coupang_cart_agent integration-live-telegram-worker --timeout 30 --sleep-seconds 1
 uv run python -m coupang_cart_agent cart-live-add --headed --product-url "https://www.coupang.com/vp/products/..." --product-id "..." --name "..."
 uv run python -m coupang_cart_agent send-telegram-notification --chat-id <chat_id> --scenario success
 ```
@@ -206,13 +231,16 @@ Suggested live operator validation order:
 uv run python -m coupang_cart_agent check-config
 uv run python -m coupang_cart_agent integration-live-request "양파 1개 담아줘" --fixture-path tests/fixtures/coupang_search_onion_fixture.json
 uv run python -m coupang_cart_agent integration-live-telegram-once --timeout 10
+uv run python -m coupang_cart_agent integration-live-telegram-worker --timeout 30 --sleep-seconds 1
 ```
 
 Recorded live validation evidence on March 11, 2026:
 
 - Real Telegram intake capture succeeded for `telegram-update-286968896` with text `콜라 제로 2개 담아줘`
-- Real Telegram -> selection -> Coupang add-to-cart -> Telegram notification succeeded with:
-  `integration-live-telegram-once --timeout 1 --intake-db-path .artifacts/telegram_intake.sqlite3 --fixture-path tests/fixtures/coupang_search_onion_fixture.json`
+- Real Telegram worker execution succeeded with:
+  `POSTGRES_DSN=postgresql://postgres:postgres@localhost:5432/coupang_cart_agent COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Profile 1' uv run python -m coupang_cart_agent integration-live-telegram-worker --timeout 1 --sleep-seconds 0 --max-cycles 1 --intake-db-path .artifacts/how22_telegram_intake.sqlite3 --fixture-path tests/fixtures/coupang_search_onion_fixture.json --skip-error-response`
+- Worker restart restored offset `286968897` from `.artifacts/how22_telegram_intake.sqlite3` and resumed with no duplicate processing on a second `integration-live-telegram-worker` run.
+- Telegram success notification payload recorded `총 1종, 2개, 17,960원 장바구니 담기 완료`.
 - The remaining gap is a production candidate source for arbitrary live requests, tracked separately in `HOW-21`
 
 ## Notes
