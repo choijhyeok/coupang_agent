@@ -74,6 +74,15 @@ class ChromeCdpSettings:
     chrome_binary_path: str = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 
 
+@dataclass(slots=True)
+class BrowserUseSettings:
+    chrome_user_data_dir: str
+    chrome_profile_directory: str
+    remote_debugging_port: int
+    copied_user_data_dir: str
+    chrome_binary_path: str = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+
+
 class PlaywrightCoupangCartPage:
     """Real browser automation adapter backed by Playwright."""
 
@@ -437,3 +446,24 @@ class ChromeCdpCoupangCartPage(PlaywrightCoupangCartPage):
                 time.sleep(0.5)
         assert last_error is not None
         raise last_error
+
+
+class BrowserUseCoupangCartPage(ChromeCdpCoupangCartPage):
+    """Real Chrome profile path aligned with browser-use's operator model."""
+
+    def __init__(
+        self,
+        *,
+        settings: PlaywrightCoupangSettings,
+        browser_use_settings: BrowserUseSettings,
+    ) -> None:
+        super().__init__(
+            settings=settings,
+            cdp_settings=ChromeCdpSettings(
+                chrome_user_data_dir=browser_use_settings.chrome_user_data_dir,
+                chrome_profile_directory=browser_use_settings.chrome_profile_directory,
+                remote_debugging_port=browser_use_settings.remote_debugging_port,
+                copied_user_data_dir=browser_use_settings.copied_user_data_dir,
+                chrome_binary_path=browser_use_settings.chrome_binary_path,
+            ),
+        )

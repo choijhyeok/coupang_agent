@@ -14,6 +14,8 @@ from langgraph.checkpoint.postgres import PostgresSaver
 from .azure_openai import AzureOpenAIPlanner
 from .candidate_sources import CapturedCoupangFixtureCandidateSource, DemoCandidateSource
 from .cart_adapters import (
+    BrowserUseCoupangCartPage,
+    BrowserUseSettings,
     ChromeCdpCoupangCartPage,
     ChromeCdpSettings,
     DemoCoupangCartPage,
@@ -49,6 +51,7 @@ from .postgres_store import PostgresOperationalStore
 from .selection import HeuristicProductSelectionService
 from .telegram_intake import TelegramBotApiClient, TelegramPollingIntakeService
 from .telegram_persistence import TelegramIntakeRepository
+from .telegram_worker import TelegramLiveWorker
 
 
 def _build_live_intake_service(*, token: str, db_path: str) -> TelegramPollingIntakeService:
@@ -150,6 +153,20 @@ def build_live_cart_page(config):
         headless=config.coupang_browser_headless,
         storage_state_path=config.coupang_storage_state_path,
     )
+    if config.coupang_browser_launch_mode == "browser_use":
+        if not config.coupang_chrome_user_data_dir:
+            raise ConfigError(
+                "COUPANG_CHROME_USER_DATA_DIR is required when COUPANG_BROWSER_LAUNCH_MODE=browser_use."
+            )
+        return BrowserUseCoupangCartPage(
+            settings=playwright_settings,
+            browser_use_settings=BrowserUseSettings(
+                chrome_user_data_dir=config.coupang_chrome_user_data_dir,
+                chrome_profile_directory=config.coupang_chrome_profile_directory,
+                remote_debugging_port=config.coupang_chrome_remote_debugging_port,
+                copied_user_data_dir=".data/browser-use-profile",
+            ),
+        )
     if config.coupang_browser_launch_mode == "cdp_chrome":
         if not config.coupang_chrome_user_data_dir:
             raise ConfigError(
@@ -313,6 +330,78 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         return 0 if captured_result is not None else 2
+
+    if command == "integration-live-telegram-worker":
+        parser = argparse.ArgumentParser(prog="python -m coupang_cart_agent integration-live-telegram-worker")
+        parser.add_argument("--offset", type=int, default=None)
+        parser.add_argument("--timeout", type=int, default=30)
+        parser.add_argument("--sleep-seconds", type=float, default=1.0)
+        parser.add_argument("--max-cycles", type=int, default=None)
+        parser.add_argument("--intake-db-path", default=".artifacts/telegram_intake.sqlite3")
+        parser.add_argument("--fixture-path", default=None)
+        parser.add_argument("--worker-name", default="telegram-live-worker")
+        parser.add_argument("--skip-error-response", action="store_true")
+        parsed = parser.parse_args(args[1:])
+
+        try:
+            config = load_config()
+        except ConfigError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+
+        intake_repository = TelegramIntakeRepository(parsed.intake_db_path)
+        intake_service = TelegramPollingIntakeService(
+            client=TelegramBotApiClient(token=config.telegram_bot_token),
+            repository=intake_repository,
+        )
+
+        try:
+            with _open_live_workflow(config=config, fixture_path=parsed.fixture_path) as (workflow, operational_store):
+                worker = TelegramLiveWorker(
+                    worker_name=parsed.worker_name,
+                    intake_service=intake_service,
+                    intake_repository=intake_repository,
+                    workflow_runner=workflow,
+                    poll_timeout=parsed.timeout,
+                    sleep_seconds=parsed.sleep_seconds,
+                    send_error_response=not parsed.skip_error_response,
+                )
+                reports = worker.run(offset=parsed.offset, max_cycles=parsed.max_cycles)
+        except KeyboardInterrupt:
+            print(
+                json.dumps(
+                    {
+                        "mode": "live-telegram-worker",
+                        "worker_name": parsed.worker_name,
+                        "message": "Worker stopped by operator.",
+                        "worker_state": intake_repository.list_worker_state(),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                    default=str,
+                )
+            )
+            return 0
+
+        print(
+            json.dumps(
+                {
+                    "mode": "live-telegram-worker",
+                    "worker_name": parsed.worker_name,
+                    "reports": [report.as_dict() for report in reports],
+                    "worker_state": intake_repository.list_worker_state(),
+                    "pending_messages": [
+                        envelope.inbound_message_id
+                        for envelope in intake_repository.load_pending_envelopes(limit=100)
+                    ],
+                    "workflow_threads": operational_store.fetch_workflow_runs(),
+                },
+                ensure_ascii=False,
+                indent=2,
+                default=str,
+            )
+        )
+        return 0
 
     if command == "integration-demo":
         parser = argparse.ArgumentParser(prog="python -m coupang_cart_agent integration-demo")
@@ -655,7 +744,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(
         "Usage: python -m coupang_cart_agent "
-        "[contracts-example|check-config|parse-telegram-message|poll-telegram-once|capture-telegram-live-request|integration-demo|cart-live-add|show-captured-candidates|send-telegram-notification|integration-live-request|integration-live-telegram-once|serve-http]",
+        "[contracts-example|check-config|parse-telegram-message|poll-telegram-once|capture-telegram-live-request|integration-demo|cart-live-add|show-captured-candidates|send-telegram-notification|integration-live-request|integration-live-telegram-once|integration-live-telegram-worker|serve-http]",
         file=sys.stderr,
     )
     return 1

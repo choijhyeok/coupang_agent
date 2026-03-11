@@ -20,7 +20,7 @@ class AppConfig:
     cart_db_path: str = ".data/cart_results.sqlite3"
     coupang_browser_headless: bool = True
     coupang_storage_state_path: str = ".data/coupang-storage-state.json"
-    coupang_browser_launch_mode: str = "playwright"
+    coupang_browser_launch_mode: str = "browser_use"
     coupang_chrome_user_data_dir: str | None = None
     coupang_chrome_profile_directory: str = "Default"
     coupang_chrome_remote_debugging_port: int = 9223
@@ -108,7 +108,7 @@ def load_config(
             "COUPANG_STORAGE_STATE_PATH",
             ".data/coupang-storage-state.json",
         ),
-        coupang_browser_launch_mode=source.get("COUPANG_BROWSER_LAUNCH_MODE", "playwright"),
+        coupang_browser_launch_mode=source.get("COUPANG_BROWSER_LAUNCH_MODE", "browser_use"),
         coupang_chrome_user_data_dir=source.get("COUPANG_CHROME_USER_DATA_DIR") or None,
         coupang_chrome_profile_directory=source.get("COUPANG_CHROME_PROFILE_DIRECTORY", "Default"),
         coupang_chrome_remote_debugging_port=int(source.get("COUPANG_CHROME_REMOTE_DEBUGGING_PORT", "9223")),
