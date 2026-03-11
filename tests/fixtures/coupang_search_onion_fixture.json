@@ -1,0 +1,43 @@
+{
+  "captured_at": "2026-03-11T09:00:00+09:00",
+  "source": "captured-coupang-search-fixture",
+  "products": [
+    {
+      "productId": "8049869159",
+      "title": "국내산 햇 양파, 5kg, 1개",
+      "salesPrice": 13610,
+      "rating": 4.6,
+      "reviewCount": 146522,
+      "productUrl": "https://www.coupang.com/vp/products/8049869159",
+      "vendorName": "탐사",
+      "badgeNames": [
+        "로켓프레시",
+        "무료배송"
+      ]
+    },
+    {
+      "productId": "5438108496",
+      "title": "곰곰 국내산 양파, 3kg, 1개",
+      "salesPrice": 8980,
+      "rating": 4.7,
+      "reviewCount": 98214,
+      "productUrl": "https://www.coupang.com/vp/products/5438108496",
+      "vendorName": "곰곰",
+      "badgeNames": [
+        "로켓프레시"
+      ]
+    },
+    {
+      "productId": "6716701462",
+      "title": "국내산 무안 햇양파, 10kg, 1개",
+      "salesPrice": 19980,
+      "rating": 4.5,
+      "reviewCount": 24811,
+      "productUrl": "https://www.coupang.com/vp/products/6716701462",
+      "vendorName": "산지직송",
+      "badgeNames": [
+        "무료배송"
+      ]
+    }
+  ]
+}

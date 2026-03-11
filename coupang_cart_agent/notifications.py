@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import asdict
+from datetime import UTC, datetime
 from time import sleep
-from typing import Callable
+from typing import Any, Callable, Protocol
 
-from .contracts import CartAddResult, NotificationPayload
+from .contracts import CartAddResult, NotificationPayload, PriorPurchaseRecord
+from .telegram_intake import TelegramBotApiClient
 
 MAX_NOTIFICATION_LENGTH = 500
 MAX_SUCCESS_ITEMS = 3
@@ -14,16 +17,135 @@ class NotificationDeliveryError(RuntimeError):
     """Raised when notification delivery exhausts configured retry attempts."""
 
 
+class NotificationTextSender(Protocol):
+    """Transport seam for sending a formatted notification string."""
+
+    def send_message(self, *, chat_id: str, text: str) -> object: ...
+
+
+class NotificationFormatter:
+    """Bounded formatter that renders a user-facing Telegram message from a payload."""
+
+    def __init__(self, *, max_length: int = MAX_NOTIFICATION_LENGTH) -> None:
+        self._max_length = max_length
+
+    def format(self, payload: NotificationPayload) -> str:
+        message = (
+            _format_success_message(payload, max_length=self._max_length)
+            if payload.success
+            else _format_failure_message(payload)
+        )
+        return truncate_message(message, limit=self._max_length)
+
+
+class TelegramSendMessageSender:
+    """Adapter that delivers messages through Telegram Bot API sendMessage."""
+
+    def __init__(self, *, client: TelegramBotApiClient) -> None:
+        self._client = client
+
+    def send_message(self, *, chat_id: str, text: str) -> dict[str, Any]:
+        return self._client.send_message(chat_id=chat_id, text=text)
+
+
+class SQLiteNotificationContextStore:
+    """Read current cart snapshot and prior purchase context from SQLite."""
+
+    def __init__(self, *, database_path: str) -> None:
+        self._database_path = database_path
+
+    def load(self, *, user_id: str) -> dict[str, object]:
+        with sqlite3.connect(self._database_path) as connection:
+            connection.row_factory = sqlite3.Row
+            cart_snapshot_items = self._load_cart_snapshot_items(connection, user_id=user_id)
+            prior_purchases = self._load_prior_purchases(connection, user_id=user_id)
+        return {
+            "cart_snapshot_items": cart_snapshot_items,
+            "prior_purchases": prior_purchases,
+        }
+
+    @staticmethod
+    def _load_cart_snapshot_items(
+        connection: sqlite3.Connection,
+        *,
+        user_id: str,
+    ) -> list[dict[str, object]]:
+        rows = connection.execute(
+            """
+            SELECT product_id, product_name, quantity, unit_price_krw, total_price_krw, snapshot_at
+            FROM current_cart_snapshot_items
+            WHERE user_id = ?
+              AND snapshot_at = (
+                SELECT MAX(snapshot_at)
+                FROM current_cart_snapshot_items
+                WHERE user_id = ?
+              )
+            ORDER BY product_name ASC, product_id ASC
+            """,
+            (user_id, user_id),
+        ).fetchall()
+        return [
+            {
+                "product_id": str(row["product_id"]),
+                "name": str(row["product_name"]),
+                "quantity": max(1, int(row["quantity"])),
+                "price_krw": int(row["unit_price_krw"]),
+                "line_total_krw": int(
+                    row["total_price_krw"]
+                    if row["total_price_krw"] is not None
+                    else int(row["unit_price_krw"]) * max(1, int(row["quantity"]))
+                ),
+                "snapshot_at": str(row["snapshot_at"]),
+            }
+            for row in rows
+        ]
+
+    @staticmethod
+    def _load_prior_purchases(
+        connection: sqlite3.Connection,
+        *,
+        user_id: str,
+    ) -> list[PriorPurchaseRecord]:
+        rows = connection.execute(
+            """
+            SELECT product_id, product_name, purchase_count, last_purchased_at, satisfaction_rating
+            FROM prior_purchases
+            WHERE user_id = ?
+            ORDER BY COALESCE(last_purchased_at, '') DESC, purchase_count DESC, product_id ASC
+            LIMIT 5
+            """,
+            (user_id,),
+        ).fetchall()
+        return [
+            PriorPurchaseRecord(
+                product_id=str(row["product_id"]),
+                product_name=str(row["product_name"]),
+                purchase_count=max(1, int(row["purchase_count"])),
+                last_purchased_at=_parse_timestamp(row["last_purchased_at"]),
+                satisfaction_rating=(
+                    None if row["satisfaction_rating"] is None else float(row["satisfaction_rating"])
+                ),
+            )
+            for row in rows
+        ]
+
+
 def build_success_notification_payload(
     *,
     chat_id: str,
     cart_results: list[CartAddResult],
+    cart_snapshot_items: list[dict[str, object]] | None = None,
+    prior_purchases: list[PriorPurchaseRecord] | None = None,
 ) -> NotificationPayload:
     if not cart_results:
         raise ValueError("cart_results must not be empty")
 
-    summary = summarize_cart_results(cart_results)
-    products = [serialize_cart_result(result) for result in cart_results]
+    products = (
+        normalize_snapshot_items(cart_snapshot_items)
+        if cart_snapshot_items
+        else [serialize_cart_result(result) for result in cart_results]
+    )
+    summary = summarize_cart_results(cart_results, cart_snapshot_items=products)
     return NotificationPayload(
         chat_id=chat_id,
         success=True,
@@ -32,6 +154,7 @@ def build_success_notification_payload(
         details={
             "products": products,
             "cart_item_count": len(products),
+            "prior_purchases": [serialize_prior_purchase(record) for record in prior_purchases or []],
         },
     )
 
@@ -64,12 +187,7 @@ def format_notification_message(
     *,
     max_length: int = MAX_NOTIFICATION_LENGTH,
 ) -> str:
-    message = (
-        _format_success_message(payload, max_length=max_length)
-        if payload.success
-        else _format_failure_message(payload)
-    )
-    return truncate_message(message, limit=max_length)
+    return NotificationFormatter(max_length=max_length).format(payload)
 
 
 class RetryingNotificationService:
@@ -78,7 +196,8 @@ class RetryingNotificationService:
     def __init__(
         self,
         *,
-        sender: Callable[[str, str], None],
+        sender: NotificationTextSender | Callable[[str, str], object | None],
+        formatter: NotificationFormatter | None = None,
         max_attempts: int = 3,
         retryable_exceptions: tuple[type[BaseException], ...] = (
             TimeoutError,
@@ -90,17 +209,18 @@ class RetryingNotificationService:
         if max_attempts < 1:
             raise ValueError("max_attempts must be at least 1")
         self._sender = sender
+        self._formatter = formatter or NotificationFormatter()
         self._max_attempts = max_attempts
         self._retryable_exceptions = retryable_exceptions
         self._sleep_seconds = sleep_seconds
         self._sleep_func = sleep_func
 
     def send(self, payload: NotificationPayload) -> None:
-        message = format_notification_message(payload)
+        message = self._formatter.format(payload)
         attempt = 1
         while True:
             try:
-                self._sender(payload.chat_id, message)
+                self._dispatch(payload.chat_id, message)
                 return
             except self._retryable_exceptions as exc:
                 if attempt >= self._max_attempts:
@@ -111,14 +231,29 @@ class RetryingNotificationService:
                 if self._sleep_seconds > 0:
                     self._sleep_func(self._sleep_seconds)
 
+    def _dispatch(self, chat_id: str, message: str) -> object | None:
+        if hasattr(self._sender, "send_message"):
+            return self._sender.send_message(chat_id=chat_id, text=message)
+        return self._sender(chat_id, message)
 
-def summarize_cart_results(cart_results: list[CartAddResult]) -> str:
-    total_items = len(cart_results)
-    total_quantity = sum(result.selected_product.quantity for result in cart_results)
-    total_price = sum(
-        result.selected_product.candidate.price_krw * result.selected_product.quantity
-        for result in cart_results
-    )
+
+def summarize_cart_results(
+    cart_results: list[CartAddResult],
+    *,
+    cart_snapshot_items: list[dict[str, object]] | None = None,
+) -> str:
+    normalized_items = normalize_snapshot_items(cart_snapshot_items)
+    if normalized_items:
+        total_items = len(normalized_items)
+        total_quantity = sum(int(item["quantity"]) for item in normalized_items)
+        total_price = sum(int(item["line_total_krw"]) for item in normalized_items)
+    else:
+        total_items = len(cart_results)
+        total_quantity = sum(result.selected_product.quantity for result in cart_results)
+        total_price = sum(
+            result.selected_product.candidate.price_krw * result.selected_product.quantity
+            for result in cart_results
+        )
     return (
         f"총 {total_items}종, {total_quantity}개, "
         f"{format_price(total_price)}원 장바구니 담기 완료"
@@ -129,9 +264,11 @@ def serialize_cart_result(result: CartAddResult) -> dict[str, object]:
     selected = result.selected_product
     candidate = selected.candidate
     return {
+        "product_id": candidate.product_id,
         "name": candidate.name,
         "price_krw": candidate.price_krw,
         "quantity": selected.quantity,
+        "line_total_krw": candidate.price_krw * selected.quantity,
         "selection_reason": selected.selection_reason,
         "cart_result": asdict(result),
     }
@@ -140,6 +277,8 @@ def serialize_cart_result(result: CartAddResult) -> dict[str, object]:
 def _format_success_message(payload: NotificationPayload, *, max_length: int) -> str:
     products = payload.details.get("products", [])
     normalized_products = products if isinstance(products, list) else []
+    prior_purchases = payload.details.get("prior_purchases", [])
+    normalized_prior_purchases = prior_purchases if isinstance(prior_purchases, list) else []
 
     for name_limit in (40, 28, 20, 14, 10):
         for item_limit in (MAX_SUCCESS_ITEMS, 2, 1, 0):
@@ -148,8 +287,15 @@ def _format_success_message(payload: NotificationPayload, *, max_length: int) ->
                 name_limit=name_limit,
                 item_limit=item_limit,
             )
+            context_lines = _build_prior_purchase_lines(
+                normalized_products,
+                normalized_prior_purchases,
+                item_limit=2,
+                name_limit=name_limit,
+            )
             lines = ["장바구니 담기를 완료했습니다."]
             lines.extend(product_lines)
+            lines.extend(context_lines)
             lines.append(f"요약: {payload.summary}")
             message = "\n".join(lines)
             if len(message) <= max_length:
@@ -179,6 +325,33 @@ def _build_product_lines(
     if remaining > 0:
         product_lines.append(f"- 외 {remaining}건")
     return product_lines
+
+
+def _build_prior_purchase_lines(
+    products: list[object],
+    prior_purchases: list[object],
+    *,
+    item_limit: int,
+    name_limit: int,
+) -> list[str]:
+    product_ids = {
+        str(product.get("product_id"))
+        for product in products
+        if isinstance(product, dict) and product.get("product_id")
+    }
+    matched_lines: list[str] = []
+    for purchase in prior_purchases:
+        if not isinstance(purchase, dict):
+            continue
+        product_id = str(purchase.get("product_id", ""))
+        if product_id and product_id not in product_ids:
+            continue
+        name = truncate_text(str(purchase.get("product_name", "이전 구매 상품")), limit=name_limit)
+        count = max(1, int(purchase.get("purchase_count", 1)))
+        matched_lines.append(f"재구매 참고: {name} / 이전 구매 {count}회")
+        if len(matched_lines) >= item_limit:
+            break
+    return matched_lines
 
 
 def _format_failure_message(payload: NotificationPayload) -> str:
@@ -211,3 +384,44 @@ def truncate_text(text: str, *, limit: int) -> str:
 
 def format_price(value: int) -> str:
     return f"{value:,}"
+
+
+def normalize_snapshot_items(items: list[dict[str, object]] | None) -> list[dict[str, object]]:
+    normalized_items: list[dict[str, object]] = []
+    for item in items or []:
+        quantity = max(1, int(item.get("quantity", 1)))
+        price_krw = int(item.get("price_krw", item.get("unit_price_krw", 0)))
+        line_total = int(item.get("line_total_krw", price_krw * quantity))
+        normalized_items.append(
+            {
+                "product_id": str(item.get("product_id", "")),
+                "name": str(item.get("name", item.get("product_name", "상품 정보 없음"))),
+                "price_krw": price_krw,
+                "quantity": quantity,
+                "line_total_krw": line_total,
+                "snapshot_at": item.get("snapshot_at"),
+            }
+        )
+    return normalized_items
+
+
+def serialize_prior_purchase(record: PriorPurchaseRecord) -> dict[str, object]:
+    return {
+        "product_id": record.product_id,
+        "product_name": record.product_name,
+        "purchase_count": record.purchase_count,
+        "last_purchased_at": (
+            None if record.last_purchased_at is None else record.last_purchased_at.isoformat()
+        ),
+        "satisfaction_rating": record.satisfaction_rating,
+    }
+
+
+def _parse_timestamp(value: object) -> datetime | None:
+    if value in (None, ""):
+        return None
+    normalized = str(value).replace("Z", "+00:00")
+    parsed = datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed

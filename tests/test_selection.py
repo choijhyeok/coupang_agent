@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import sqlite3
+import tempfile
 import unittest
+from pathlib import Path
 
+from coupang_cart_agent.candidate_sources import CapturedCoupangFixtureCandidateSource, product_candidate_from_record
 from coupang_cart_agent.contracts import ProductCandidate, RequestedItem, ShoppingRequest
 from coupang_cart_agent.selection import HeuristicProductSelectionService, select_best_product
+from coupang_cart_agent.selection_context import InMemorySelectionContextStore, SQLiteSelectionContextStore
 
 
 def candidate(
@@ -116,6 +121,204 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(len(selections), 1)
         self.assertEqual(selections[0].request_item_name, "제로콜라")
         self.assertEqual(selections[0].candidate.product_id, "b")
+
+    def test_service_uses_prior_purchase_and_session_context(self) -> None:
+        request = ShoppingRequest(
+            user_id="telegram:1",
+            chat_id="1",
+            raw_text="세제 담아줘",
+            request_id="request-ctx-1",
+            items=[RequestedItem(name="세제", quantity=1)],
+        )
+        service = HeuristicProductSelectionService(
+            context_store=InMemorySelectionContextStore(
+                prior_purchases_by_user={
+                    "telegram:1": [
+                        product_candidate_to_purchase_record(
+                            product_id="trusted-repeat",
+                            product_name="세제 베스트",
+                            purchase_count=2,
+                            satisfaction_rating=4.8,
+                        )
+                    ]
+                },
+                session_signals_by_request={
+                    "request-ctx-1": [session_signal(product_id="avoid-me", signal="avoid")]
+                },
+            )
+        )
+
+        selections = service.select_products(
+            request,
+            {
+                "세제": [
+                    candidate(product_id="avoid-me", name="세제", price_krw=8300, rating=4.8, review_count=2300),
+                    candidate(
+                        product_id="trusted-repeat",
+                        name="세제",
+                        price_krw=8800,
+                        rating=4.7,
+                        review_count=1800,
+                    ),
+                    candidate(product_id="new-premium", name="세제", price_krw=11900, rating=4.9, review_count=420),
+                ]
+            },
+        )
+
+        self.assertEqual(selections[0].candidate.product_id, "trusted-repeat")
+        self.assertIn("repeat purchase signal", selections[0].selection_reason)
+
+    def test_captured_fixture_source_supports_production_shaped_candidates(self) -> None:
+        request = ShoppingRequest(
+            user_id="telegram:fixture-user",
+            chat_id="fixture-chat",
+            raw_text="양파 담아줘",
+            request_id="fixture-request-1",
+            items=[RequestedItem(name="양파", quantity=1)],
+        )
+        fixture_path = Path(__file__).parent / "fixtures" / "coupang_search_onion_fixture.json"
+        source = CapturedCoupangFixtureCandidateSource(fixture_path=str(fixture_path))
+
+        candidates_by_item = source(request)
+        selections = HeuristicProductSelectionService().select_products(request, candidates_by_item)
+
+        self.assertEqual(len(candidates_by_item["양파"]), 3)
+        self.assertEqual(selections[0].candidate.product_id, "5438108496:양파")
+        self.assertIn("98,214 reviews", selections[0].selection_reason)
+
+    def test_sqlite_context_store_reads_prior_purchase_and_session_tables(self) -> None:
+        request = ShoppingRequest(
+            user_id="telegram:db-user",
+            chat_id="db-chat",
+            raw_text="휴지 담아줘",
+            request_id="request-db-1",
+            items=[RequestedItem(name="휴지")],
+        )
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            database_path = Path(temporary_directory) / "selection_context.sqlite3"
+            self._create_context_database(database_path)
+
+            context_store = SQLiteSelectionContextStore(database_path=str(database_path))
+            context = context_store.load(request)
+            selected = select_best_product(
+                request.items[0],
+                [
+                    candidate(product_id="repeat-choice", name="휴지", price_krw=13900, rating=4.6, review_count=920),
+                    candidate(product_id="avoid-choice", name="휴지", price_krw=12600, rating=4.7, review_count=1800),
+                    candidate(product_id="neutral", name="휴지", price_krw=14600, rating=4.7, review_count=870),
+                ],
+                context=context,
+            )
+
+        self.assertEqual(len(context.prior_purchases), 1)
+        self.assertEqual(len(context.recent_session_signals), 1)
+        self.assertEqual(selected.candidate.product_id, "repeat-choice")
+        self.assertIn("repeat purchase signal", selected.selection_reason)
+
+    @staticmethod
+    def _create_context_database(database_path: Path) -> None:
+        with sqlite3.connect(database_path) as connection:
+            connection.execute(
+                """
+                CREATE TABLE prior_purchases (
+                    user_id TEXT NOT NULL,
+                    product_id TEXT NOT NULL,
+                    product_name TEXT NOT NULL,
+                    purchase_count INTEGER NOT NULL,
+                    last_purchased_at TEXT,
+                    satisfaction_rating REAL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE recent_session_signals (
+                    user_id TEXT NOT NULL,
+                    request_id TEXT,
+                    product_id TEXT NOT NULL,
+                    signal TEXT NOT NULL,
+                    noted_at TEXT
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO prior_purchases (
+                    user_id, product_id, product_name, purchase_count, last_purchased_at, satisfaction_rating
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "telegram:db-user",
+                    "repeat-choice",
+                    "휴지 재구매",
+                    3,
+                    "2026-03-10T08:00:00+09:00",
+                    4.9,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO recent_session_signals (
+                    user_id, request_id, product_id, signal, noted_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    "telegram:db-user",
+                    "request-db-1",
+                    "avoid-choice",
+                    "avoid",
+                    "2026-03-11T08:30:00+09:00",
+                ),
+            )
+            connection.commit()
+
+
+def product_candidate_to_purchase_record(
+    *,
+    product_id: str,
+    product_name: str,
+    purchase_count: int,
+    satisfaction_rating: float,
+):
+    from coupang_cart_agent.contracts import PriorPurchaseRecord
+
+    return PriorPurchaseRecord(
+        product_id=product_id,
+        product_name=product_name,
+        purchase_count=purchase_count,
+        satisfaction_rating=satisfaction_rating,
+    )
+
+
+def session_signal(*, product_id: str, signal: str):
+    from coupang_cart_agent.contracts import SessionSelectionSignal
+
+    return SessionSelectionSignal(product_id=product_id, signal=signal)
+
+
+class CandidateSourceNormalizationTests(unittest.TestCase):
+    def test_product_candidate_from_record_normalizes_collector_shapes(self) -> None:
+        candidate_record = product_candidate_from_record(
+            {
+                "productId": "p-1",
+                "title": "  양파  ",
+                "salesPrice": "12,300",
+                "ratingAverage": "4.8",
+                "ratingCount": "912",
+                "productUrl": " https://www.coupang.com/vp/products/p-1 ",
+                "vendorName": " 산지직송 ",
+                "badgeNames": [" 로켓프레시 ", ""],
+            }
+        )
+
+        self.assertEqual(candidate_record.product_id, "p-1")
+        self.assertEqual(candidate_record.name, "양파")
+        self.assertEqual(candidate_record.price_krw, 12300)
+        self.assertEqual(candidate_record.rating, 4.8)
+        self.assertEqual(candidate_record.review_count, 912)
+        self.assertEqual(candidate_record.vendor, "산지직송")
+        self.assertEqual(candidate_record.badges, ["로켓프레시"])
 
 
 if __name__ == "__main__":

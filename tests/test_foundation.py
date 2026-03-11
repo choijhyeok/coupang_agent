@@ -19,7 +19,7 @@ from coupang_cart_agent.cart_executor import (
     UIElementNotFoundError,
 )
 from coupang_cart_agent.cli import main
-from coupang_cart_agent.config import ConfigError, load_config
+from coupang_cart_agent.config import ConfigError, load_config, load_telegram_bot_token
 from coupang_cart_agent.contracts import (
     CartAddFailureReason,
     CartAddStage,
@@ -117,6 +117,15 @@ class FoundationTests(unittest.TestCase):
         self.assertEqual(config.coupang_chrome_remote_debugging_port, 9555)
         self.assertEqual(config.coupang_storage_state_path, "/tmp/coupang-state.json")
 
+    def test_load_telegram_bot_token_reads_only_bot_token(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            dotenv_path = Path(tmp_dir) / ".env"
+            dotenv_path.write_text("TELEGRAM_BOT_TOKEN=test-bot-token", encoding="utf-8")
+
+            token = load_telegram_bot_token({}, dotenv_path=dotenv_path)
+
+        self.assertEqual(token, "test-bot-token")
+
     def test_cli_contracts_example_runs(self) -> None:
         stdout = io.StringIO()
         with redirect_stdout(stdout):
@@ -128,20 +137,100 @@ class FoundationTests(unittest.TestCase):
     def test_cli_check_config_reports_missing_values(self) -> None:
         stdout = io.StringIO()
         stderr = io.StringIO()
-        with patch.dict(
-            os.environ,
-            {
-                "TELEGRAM_BOT_TOKEN": "",
-                "COUPANG_USERNAME": "",
-                "COUPANG_PASSWORD": "",
-            },
-            clear=True,
-        ), redirect_stdout(stdout), redirect_stderr(stderr):
+        with patch.dict(os.environ, {}, clear=True), redirect_stdout(stdout), redirect_stderr(stderr):
             exit_code = main(["check-config"])
 
         self.assertEqual(exit_code, 1)
         self.assertEqual(stdout.getvalue(), "")
         self.assertIn("Missing required configuration", stderr.getvalue())
+
+    def test_cli_poll_telegram_once_reports_missing_bot_token_only(self) -> None:
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with patch.dict(os.environ, {}, clear=True), redirect_stdout(stdout), redirect_stderr(stderr):
+            exit_code = main(["poll-telegram-once", "--timeout", "1"])
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("TELEGRAM_BOT_TOKEN", stderr.getvalue())
+
+    def test_cli_capture_telegram_live_request_loops_until_result(self) -> None:
+        class FakeResult:
+            def __init__(self, update_id: int) -> None:
+                self.update_id = update_id
+
+            def as_dict(self) -> dict[str, object]:
+                return {"update_id": self.update_id, "captured": True}
+
+        class FakeService:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            def poll_once(self, *, offset, timeout, mode, send_error_response):
+                self.calls.append(
+                    {
+                        "offset": offset,
+                        "timeout": timeout,
+                        "mode": mode.value,
+                        "send_error_response": send_error_response,
+                    }
+                )
+                if len(self.calls) < 3:
+                    return []
+                return [FakeResult(update_id=55)]
+
+        fake_service = FakeService()
+        stdout = io.StringIO()
+        with (
+            patch("coupang_cart_agent.cli.load_telegram_bot_token", return_value="test-token"),
+            patch("coupang_cart_agent.cli._build_live_intake_service", return_value=fake_service),
+            redirect_stdout(stdout),
+        ):
+            exit_code = main(
+                [
+                    "capture-telegram-live-request",
+                    "--timeout",
+                    "2",
+                    "--max-attempts",
+                    "5",
+                    "--db-path",
+                    "tmp.sqlite3",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        output = stdout.getvalue()
+        self.assertIn('"mode": "live-capture"', output)
+        self.assertIn('"captured": true', output)
+        self.assertIn('"attempt": 3', output)
+        self.assertEqual(fake_service.calls[0]["offset"], None)
+        self.assertEqual(fake_service.calls[2]["mode"], "live")
+
+    def test_cli_capture_telegram_live_request_returns_two_when_empty(self) -> None:
+        class EmptyService:
+            def poll_once(self, *, offset, timeout, mode, send_error_response):
+                return []
+
+        stdout = io.StringIO()
+        with (
+            patch("coupang_cart_agent.cli.load_telegram_bot_token", return_value="test-token"),
+            patch("coupang_cart_agent.cli._build_live_intake_service", return_value=EmptyService()),
+            redirect_stdout(stdout),
+        ):
+            exit_code = main(
+                [
+                    "capture-telegram-live-request",
+                    "--timeout",
+                    "1",
+                    "--max-attempts",
+                    "2",
+                    "--db-path",
+                    "tmp.sqlite3",
+                ]
+            )
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn('"captured": null', stdout.getvalue())
 
     def test_cli_integration_demo_success_runs_end_to_end_proof(self) -> None:
         stdout = io.StringIO()
@@ -178,6 +267,41 @@ class FoundationTests(unittest.TestCase):
         self.assertIn('"success": false', output)
         self.assertIn('"failed_stage": "product_page"', output)
         self.assertIn("장바구니 담기에 실패했습니다.", output)
+
+    def test_cli_send_telegram_notification_uses_live_sender_path(self) -> None:
+        stdout = io.StringIO()
+        delivered: list[tuple[str, str]] = []
+
+        class FakeTelegramBotApiClient:
+            def __init__(self, *, token: str) -> None:
+                self.token = token
+
+            def send_message(self, *, chat_id: str, text: str) -> dict[str, object]:
+                delivered.append((chat_id, text))
+                return {"ok": True}
+
+        with (
+            patch("coupang_cart_agent.cli.load_telegram_bot_token", return_value="test-token"),
+            patch("coupang_cart_agent.cli.TelegramBotApiClient", FakeTelegramBotApiClient),
+            redirect_stdout(stdout),
+        ):
+            exit_code = main(
+                [
+                    "send-telegram-notification",
+                    "--chat-id",
+                    "telegram-chat",
+                    "--scenario",
+                    "failure",
+                    "--failure-stage",
+                    "cart_add",
+                    "--failure-reason",
+                    "품절",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(delivered, [("telegram-chat", "장바구니 담기에 실패했습니다.\n단계: cart_add\n원인: 품절")])
+        self.assertIn('"chat_id": "telegram-chat"', stdout.getvalue())
 
     def test_contract_import_example(self) -> None:
         request = ShoppingRequest(

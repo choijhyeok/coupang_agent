@@ -12,12 +12,14 @@ Shared modules for a Telegram-driven Coupang cart agent. The repository is organ
 │   ├── __main__.py
 │   ├── cart_executor.py
 │   ├── cart_persistence.py
+│   ├── candidate_sources.py
 │   ├── cli.py
 │   ├── config.py
 │   ├── contracts.py
 │   ├── integration.py
 │   ├── notifications.py
 │   ├── selection.py
+│   ├── selection_context.py
 │   ├── services.py
 │   └── telegram_intake.py
 ├── main.py
@@ -67,13 +69,19 @@ Shared modules for a Telegram-driven Coupang cart agent. The repository is organ
 - `uv run python -m coupang_cart_agent parse-telegram-message "콜라 제로 2개 담아줘"`
   Parses a Telegram-style shopping request into the shared `ShoppingRequest` contract.
 - `uv run python -m coupang_cart_agent poll-telegram-once --timeout 1`
-  Uses Telegram Bot API long polling once and prints parsed requests or user-facing errors.
+  Uses Telegram Bot API long polling once, persists inbound/session records, and prints live intake envelopes or user-facing errors.
+- `uv run python -m coupang_cart_agent capture-telegram-live-request --timeout 30 --max-attempts 10`
+  Repeats live polling until the first real Telegram update is captured or attempts are exhausted, printing a validation-friendly evidence payload.
 - `uv run python -m coupang_cart_agent integration-demo "콜라 제로 2개 담아줘" --scenario success`
   Runs a local end-to-end proof across intake, selection, cart execution, and notification with deterministic demo doubles.
 - `uv run python -m coupang_cart_agent integration-demo "삼다수 1박스 담아줘" --scenario cart-failure`
   Exercises a failure path that stops before checkout and emits a failure notification.
 - `uv run python -m coupang_cart_agent cart-live-add --headed --product-url "https://www.coupang.com/vp/products/..." --product-id "..." --name "..."`
   Runs the production-shaped live cart adapter against a real Coupang product page and persists the resulting `CartAddResult` into SQLite.
+- `uv run python -m coupang_cart_agent show-captured-candidates --item-name 양파`
+  Loads a captured production-shaped candidate fixture and prints normalized candidates.
+- `uv run python -m coupang_cart_agent send-telegram-notification --chat-id <chat_id> --scenario success --database-path <sqlite_db>`
+  Sends a real Telegram success or failure message using the live `sendMessage` path. When `--database-path` is provided, the success payload reads `current_cart_snapshot_items` and `prior_purchases` from SQLite to compose the reply.
 - `uv run python main.py contracts-example`
   Root entrypoint wrapper for local execution.
 
@@ -83,6 +91,8 @@ The following contracts are shared across modules:
 
 - `RequestedItem`
 - `ShoppingRequest`
+- `RequestSession`
+- `ShoppingRequestEnvelope`
 - `ProductCandidate`
 - `SelectedProduct`
 - `CartAddResult`
@@ -104,7 +114,8 @@ Downstream modules should implement the protocols in [coupang_cart_agent/service
 [coupang_cart_agent/telegram_intake.py](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-17/coupang_cart_agent/telegram_intake.py) provides a production-shaped intake implementation for HOW-8.
 
 - `TelegramBotApiClient`: minimal Telegram Bot API client using long polling.
-- `TelegramPollingIntakeService`: extracts Telegram updates, parses `... 담아줘` messages, and returns `ShoppingRequest` or a concise error response.
+- `TelegramPollingIntakeService`: keeps the demo parser path separate from the production long-polling path, parses `... 담아줘` messages, persists inbound/session records, and returns a LangGraph-ready `ShoppingRequestEnvelope`.
+- `TelegramIntakeRepository`: SQLite-backed storage for Telegram session and inbound request records.
 
 Supported parsing rules:
 
@@ -113,16 +124,28 @@ Supported parsing rules:
 - optional price cap such as `20000원 이하`
 - multiple requested items separated by newlines, `;`, or `그리고`
 
+Live intake persistence stores:
+
+- stable `session_id` linked to `user_id` and `chat_id`
+- inbound message rows with parse status, raw update payload, and normalized `request_id`
+- enough envelope metadata to hand the request into LangGraph state without reshaping
+
 ## Selection Engine
 
-[coupang_cart_agent/selection.py](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-17/coupang_cart_agent/selection.py) exposes a pure `select_best_product()` helper and a protocol-compatible `HeuristicProductSelectionService` that scores candidates by rating, review count, and relative price.
+[coupang_cart_agent/selection.py](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-17/coupang_cart_agent/selection.py) exposes a pure `select_best_product()` helper and a protocol-compatible `HeuristicProductSelectionService` that scores candidates by rating, review count, relative price, prior purchase history, and recent session context when a store is provided.
+
+[coupang_cart_agent/candidate_sources.py](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-17/coupang_cart_agent/candidate_sources.py) separates deterministic demo candidates from production-shaped sources:
+
+- `DemoCandidateSource` for safe local end-to-end demos
+- `CapturedCoupangFixtureCandidateSource` for captured repo fixtures
+- `LiveCoupangSearchCandidateSource` for live collector or Scrapling-equivalent JSON output
+
+[coupang_cart_agent/selection_context.py](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-17/coupang_cart_agent/selection_context.py) defines the DB read path for prior purchases and recent session signals, including an SQLite-backed store used by tests.
 
 ## Notifications
 
 The telegram notification module lives in [coupang_cart_agent/notifications.py](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-17/coupang_cart_agent/notifications.py).
-It exposes payload builders aligned with `NotificationPayload`, a bounded
-formatter for concise success and failure messages, and a retrying sender adapter
-for transient delivery failures.
+It exposes payload builders aligned with `NotificationPayload`, a bounded formatter for concise success and failure messages, a Telegram `sendMessage` sender adapter, a retrying delivery service, and a SQLite-backed context reader for `current_cart_snapshot_items` plus `prior_purchases`.
 
 ## Cart Automation Module
 
@@ -186,13 +209,17 @@ Additional module proofs:
 
 ```bash
 uv run python -m coupang_cart_agent parse-telegram-message "삼다수 2L 1박스 옵션: 무라벨 담아줘"
+uv run python -m coupang_cart_agent poll-telegram-once --timeout 1 --db-path .artifacts/telegram_intake.sqlite3
+uv run python -m coupang_cart_agent capture-telegram-live-request --timeout 30 --max-attempts 10 --db-path .artifacts/telegram_intake.sqlite3
 uv run python -m unittest tests.test_selection
+uv run python -m coupang_cart_agent show-captured-candidates --item-name 양파
 ```
 
 Notification-specific validation:
 
 ```bash
 uv run python -m unittest tests.test_notifications
+uv run python -m coupang_cart_agent send-telegram-notification --chat-id <chat_id> --scenario failure
 ```
 
 Integration-specific validation:

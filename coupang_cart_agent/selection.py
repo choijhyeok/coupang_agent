@@ -4,7 +4,8 @@ from dataclasses import replace
 from math import isclose, log10
 from statistics import median
 
-from .contracts import ProductCandidate, RequestedItem, SelectedProduct, ShoppingRequest
+from .contracts import ProductCandidate, RequestedItem, SelectedProduct, SelectionContext, ShoppingRequest
+from .services import SelectionContextStore
 
 
 def normalize_candidate(candidate: ProductCandidate) -> ProductCandidate:
@@ -22,7 +23,12 @@ def normalize_candidate(candidate: ProductCandidate) -> ProductCandidate:
     )
 
 
-def score_candidate(candidate: ProductCandidate, *, median_price_krw: float) -> float:
+def score_candidate(
+    candidate: ProductCandidate,
+    *,
+    median_price_krw: float,
+    context: SelectionContext | None = None,
+) -> float:
     """Balance quality, confidence, and price without blindly picking the cheapest item."""
 
     rating_score = (candidate.rating / 5.0) * 60.0
@@ -42,15 +48,35 @@ def score_candidate(candidate: ProductCandidate, *, median_price_krw: float) -> 
     if price_ratio < 0.72 and (candidate.rating < 4.3 or candidate.review_count < 200):
         suspiciously_cheap_penalty = 10.0
 
-    return round(
+    context_adjustment = 0.0
+    if context is not None:
+        prior_purchase = next(
+            (record for record in context.prior_purchases if record.product_id == candidate.product_id),
+            None,
+        )
+        if prior_purchase is not None:
+            context_adjustment += min(prior_purchase.purchase_count, 3) * 1.5
+            if prior_purchase.satisfaction_rating is not None:
+                context_adjustment += (prior_purchase.satisfaction_rating - 3.0) * 2.0
+
+        for signal in context.recent_session_signals:
+            if signal.product_id != candidate.product_id:
+                continue
+            normalized_signal = signal.signal.strip().lower()
+            if normalized_signal in {"preferred", "repeat", "liked"}:
+                context_adjustment += 3.0
+            elif normalized_signal in {"avoid", "rejected", "disliked"}:
+                context_adjustment -= 6.0
+
+    base_score = (
         rating_score
         + review_score
         + price_score
         - low_rating_penalty
         - low_review_penalty
-        - suspiciously_cheap_penalty,
-        4,
+        - suspiciously_cheap_penalty
     )
+    return round(base_score + context_adjustment, 4)
 
 
 def summarize_selection_reason(
@@ -58,6 +84,7 @@ def summarize_selection_reason(
     *,
     score: float,
     median_price_krw: float,
+    context: SelectionContext | None = None,
 ) -> str:
     price_ratio = candidate.price_krw / median_price_krw if median_price_krw else 1.0
     if price_ratio <= 0.95:
@@ -67,16 +94,39 @@ def summarize_selection_reason(
     else:
         price_note = "near the candidate median price"
 
-    return (
+    context_fragments: list[str] = []
+    if context is not None:
+        prior_purchase = next(
+            (record for record in context.prior_purchases if record.product_id == candidate.product_id),
+            None,
+        )
+        if prior_purchase is not None:
+            context_fragments.append(f"repeat purchase signal x{prior_purchase.purchase_count}")
+
+        for signal in context.recent_session_signals:
+            if signal.product_id != candidate.product_id:
+                continue
+            normalized_signal = signal.signal.strip().lower()
+            if normalized_signal in {"preferred", "repeat", "liked"}:
+                context_fragments.append(f"recent session marked as {normalized_signal}")
+            elif normalized_signal in {"avoid", "rejected", "disliked"}:
+                context_fragments.append(f"recent session penalty for {normalized_signal}")
+
+    summary = (
         f"Selected for balanced quality: rating {candidate.rating:.1f}/5, "
         f"{candidate.review_count:,} reviews, {candidate.price_krw:,} KRW "
         f"({price_note}), score {score:.2f}."
     )
+    if context_fragments:
+        summary += " Context: " + ", ".join(context_fragments) + "."
+    return summary
 
 
 def select_best_product(
     requested_item: RequestedItem,
     candidates: list[ProductCandidate],
+    *,
+    context: SelectionContext | None = None,
 ) -> SelectedProduct:
     if len(candidates) < 3:
         raise ValueError("At least 3 candidates are required for reliable product selection.")
@@ -86,7 +136,7 @@ def select_best_product(
 
     scored_candidates = [
         (
-            score_candidate(candidate, median_price_krw=median_price_krw),
+            score_candidate(candidate, median_price_krw=median_price_krw, context=context),
             candidate,
         )
         for candidate in normalized_candidates
@@ -117,6 +167,7 @@ def select_best_product(
             best_candidate,
             score=best_score,
             median_price_krw=median_price_krw,
+            context=context,
         ),
         score=best_score,
     )
@@ -125,14 +176,18 @@ def select_best_product(
 class HeuristicProductSelectionService:
     """Protocol-compatible pure selector for product candidates."""
 
+    def __init__(self, *, context_store: SelectionContextStore | None = None) -> None:
+        self._context_store = context_store
+
     def select_products(
         self,
         request: ShoppingRequest,
         candidates_by_item: dict[str, list[ProductCandidate]],
     ) -> list[SelectedProduct]:
+        context = self._context_store.load(request) if self._context_store is not None else None
         selections: list[SelectedProduct] = []
         for item in request.items:
             candidates = candidates_by_item.get(item.name, [])
-            selections.append(select_best_product(item, candidates))
+            selections.append(select_best_product(item, candidates, context=context))
 
         return selections
