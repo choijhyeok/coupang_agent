@@ -14,7 +14,7 @@
 - [completed] Implement formatter/sender separation with Telegram live adapter support.
 - [completed] Add DB-backed cart snapshot and prior purchase context message composition.
 - [completed] Add targeted tests and operator CLI for example success/failure sends.
-- [in_progress] Run validation, attempt live Telegram send, publish branch, and record evidence.
+- [completed] Run validation, attempt live Telegram send, publish branch, and record evidence.
 
 ### Acceptance Criteria
 
@@ -22,15 +22,15 @@
 - [x] 실패 시 실패 원인과 실패 지점을 전송한다
 - [x] 메시지 길이가 과도하지 않다
 - [x] `NotificationPayload` 계약과 일치한다
-- [ ] 실제 Telegram chat으로 성공 또는 실패 메시지를 1건 이상 전송한다
-- [ ] local sender double만으로 완료 처리하지 않는다
+- [x] 실제 Telegram chat으로 성공 또는 실패 메시지를 1건 이상 전송한다
+- [x] local sender double만으로 완료 처리하지 않는다
 
 ### Validation Checklist
 
 - [x] 성공 메시지 예시 전송 확인
 - [x] 실패 메시지 예시 전송 확인
 - [x] 포맷 스냅샷 테스트 또는 문자열 테스트
-- [ ] 실제 Telegram `sendMessage` 검증 1건
+- [x] 실제 Telegram `sendMessage` 검증 1건
 - [x] live token 미보유 시 blocker로 남기고 완료 처리하지 않는다
 - [x] DB에서 읽은 cart snapshot 기준으로 상품명/수량/총액이 포함된 메시지 검증 1건
 
@@ -41,11 +41,13 @@
 - `uv run python - <<'PY' ... getMe/getWebhookInfo/getUpdates ... PY`
   - `getMe`: bot `@coupang_cart_bot`
   - `getWebhookInfo`: no webhook configured
-  - `getUpdates`: `[]`
-- Live delivery blocker:
-- Failed command: `uv run python -m coupang_cart_agent send-telegram-notification --chat-id 8725154905 --scenario failure`
-- Result: Telegram Bot API `HTTP Error 403: Forbidden`
-- Missing external input: a real Telegram chat ID for a user/group/channel that has started a conversation with `@coupang_cart_bot`
+  - initial `getUpdates`: `[]`
+  - later `getUpdates`: captured reachable chat `8201584878`
+- Live Telegram validation completed:
+  - failure send:
+    `uv run python -m coupang_cart_agent send-telegram-notification --chat-id 8201584878 --scenario failure --failure-stage cart_add --failure-reason "장바구니 버튼 탐색에 실패했습니다." --failure-detail "상품 페이지에서 버튼 셀렉터가 확인되지 않았습니다."`
+  - success send with DB-backed snapshot context:
+    `uv run python -m coupang_cart_agent send-telegram-notification --chat-id 8201584878 --scenario success --user-id telegram:8201584878 --database-path tmp/how18_notification_live.sqlite3`
 - Local validation complete:
   - `uv run python -m unittest tests.test_notifications`
   - `uv run python -m unittest tests.test_integration`
