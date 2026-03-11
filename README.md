@@ -10,12 +10,14 @@ Shared modules for a Telegram-driven Coupang cart agent. The repository is organ
 │   ├── __init__.py
 │   ├── __main__.py
 │   ├── cart_executor.py
+│   ├── candidate_sources.py
 │   ├── cli.py
 │   ├── config.py
 │   ├── contracts.py
 │   ├── integration.py
 │   ├── notifications.py
 │   ├── selection.py
+│   ├── selection_context.py
 │   ├── services.py
 │   └── telegram_intake.py
 ├── main.py
@@ -70,6 +72,8 @@ Shared modules for a Telegram-driven Coupang cart agent. The repository is organ
   Runs a local end-to-end proof across intake, selection, cart execution, and notification with deterministic demo doubles.
 - `uv run python -m coupang_cart_agent integration-demo "삼다수 1박스 담아줘" --scenario cart-failure`
   Exercises a failure path that stops before checkout and emits a failure notification.
+- `uv run python -m coupang_cart_agent show-captured-candidates --item-name 양파`
+  Loads a captured production-shaped candidate fixture and prints normalized candidates.
 - `uv run python main.py contracts-example`
   Root entrypoint wrapper for local execution.
 
@@ -111,7 +115,15 @@ Supported parsing rules:
 
 ## Selection Engine
 
-[coupang_cart_agent/selection.py](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-13/coupang_cart_agent/selection.py) exposes a pure `select_best_product()` helper and a protocol-compatible `HeuristicProductSelectionService` that scores candidates by rating, review count, and relative price.
+[coupang_cart_agent/selection.py](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-16/coupang_cart_agent/selection.py) exposes a pure `select_best_product()` helper and a protocol-compatible `HeuristicProductSelectionService` that scores candidates by rating, review count, relative price, prior purchase history, and recent session context when a store is provided.
+
+[coupang_cart_agent/candidate_sources.py](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-16/coupang_cart_agent/candidate_sources.py) separates deterministic demo candidates from production-shaped sources:
+
+- `DemoCandidateSource` for safe local end-to-end demos
+- `CapturedCoupangFixtureCandidateSource` for captured repo fixtures
+- `LiveCoupangSearchCandidateSource` for live collector or Scrapling-equivalent JSON output
+
+[coupang_cart_agent/selection_context.py](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-16/coupang_cart_agent/selection_context.py) defines the DB read path for prior purchases and recent session signals, including an SQLite-backed store used by tests.
 
 ## Notifications
 
@@ -175,6 +187,7 @@ Additional module proofs:
 ```bash
 uv run python -m coupang_cart_agent parse-telegram-message "삼다수 2L 1박스 옵션: 무라벨 담아줘"
 uv run python -m unittest tests.test_selection
+uv run python -m coupang_cart_agent show-captured-candidates --item-name 양파
 ```
 
 Notification-specific validation:
