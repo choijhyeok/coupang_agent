@@ -8,8 +8,10 @@ Shared modules for a Telegram-driven Coupang cart agent. The repository is organ
 .
 ├── coupang_cart_agent/
 │   ├── __init__.py
+│   ├── cart_adapters.py
 │   ├── __main__.py
 │   ├── cart_executor.py
+│   ├── cart_persistence.py
 │   ├── candidate_sources.py
 │   ├── cli.py
 │   ├── config.py
@@ -74,6 +76,8 @@ Shared modules for a Telegram-driven Coupang cart agent. The repository is organ
   Runs a local end-to-end proof across intake, selection, cart execution, and notification with deterministic demo doubles.
 - `uv run python -m coupang_cart_agent integration-demo "삼다수 1박스 담아줘" --scenario cart-failure`
   Exercises a failure path that stops before checkout and emits a failure notification.
+- `uv run python -m coupang_cart_agent cart-live-add --headed --product-url "https://www.coupang.com/vp/products/..." --product-id "..." --name "..."`
+  Runs the production-shaped live cart adapter against a real Coupang product page and persists the resulting `CartAddResult` into SQLite.
 - `uv run python -m coupang_cart_agent show-captured-candidates --item-name 양파`
   Loads a captured production-shaped candidate fixture and prints normalized candidates.
 - `uv run python -m coupang_cart_agent send-telegram-notification --chat-id <chat_id> --scenario success --database-path <sqlite_db>`
@@ -94,11 +98,11 @@ The following contracts are shared across modules:
 - `CartAddResult`
 - `NotificationPayload`
 
-See [coupang_cart_agent/contracts.py](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-13/coupang_cart_agent/contracts.py) for field-level definitions.
+See [coupang_cart_agent/contracts.py](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-17/coupang_cart_agent/contracts.py) for field-level definitions.
 
 ## Service Interfaces
 
-Downstream modules should implement the protocols in [coupang_cart_agent/services.py](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-13/coupang_cart_agent/services.py):
+Downstream modules should implement the protocols in [coupang_cart_agent/services.py](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-17/coupang_cart_agent/services.py):
 
 - `TelegramIntakeService`
 - `ProductSelectionService`
@@ -107,7 +111,7 @@ Downstream modules should implement the protocols in [coupang_cart_agent/service
 
 ## Telegram Intake
 
-[coupang_cart_agent/telegram_intake.py](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-13/coupang_cart_agent/telegram_intake.py) provides a production-shaped intake implementation for HOW-8.
+[coupang_cart_agent/telegram_intake.py](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-17/coupang_cart_agent/telegram_intake.py) provides a production-shaped intake implementation for HOW-8.
 
 - `TelegramBotApiClient`: minimal Telegram Bot API client using long polling.
 - `TelegramPollingIntakeService`: keeps the demo parser path separate from the production long-polling path, parses `... 담아줘` messages, persists inbound/session records, and returns a LangGraph-ready `ShoppingRequestEnvelope`.
@@ -128,28 +132,31 @@ Live intake persistence stores:
 
 ## Selection Engine
 
-[coupang_cart_agent/selection.py](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-16/coupang_cart_agent/selection.py) exposes a pure `select_best_product()` helper and a protocol-compatible `HeuristicProductSelectionService` that scores candidates by rating, review count, relative price, prior purchase history, and recent session context when a store is provided.
+[coupang_cart_agent/selection.py](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-17/coupang_cart_agent/selection.py) exposes a pure `select_best_product()` helper and a protocol-compatible `HeuristicProductSelectionService` that scores candidates by rating, review count, relative price, prior purchase history, and recent session context when a store is provided.
 
-[coupang_cart_agent/candidate_sources.py](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-16/coupang_cart_agent/candidate_sources.py) separates deterministic demo candidates from production-shaped sources:
+[coupang_cart_agent/candidate_sources.py](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-17/coupang_cart_agent/candidate_sources.py) separates deterministic demo candidates from production-shaped sources:
 
 - `DemoCandidateSource` for safe local end-to-end demos
 - `CapturedCoupangFixtureCandidateSource` for captured repo fixtures
 - `LiveCoupangSearchCandidateSource` for live collector or Scrapling-equivalent JSON output
 
-[coupang_cart_agent/selection_context.py](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-16/coupang_cart_agent/selection_context.py) defines the DB read path for prior purchases and recent session signals, including an SQLite-backed store used by tests.
+[coupang_cart_agent/selection_context.py](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-17/coupang_cart_agent/selection_context.py) defines the DB read path for prior purchases and recent session signals, including an SQLite-backed store used by tests.
 
 ## Notifications
 
-The telegram notification module lives in [coupang_cart_agent/notifications.py](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-13/coupang_cart_agent/notifications.py).
+The telegram notification module lives in [coupang_cart_agent/notifications.py](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-17/coupang_cart_agent/notifications.py).
 It exposes payload builders aligned with `NotificationPayload`, a bounded formatter for concise success and failure messages, a Telegram `sendMessage` sender adapter, a retrying delivery service, and a SQLite-backed context reader for `current_cart_snapshot_items` plus `prior_purchases`.
 
 ## Cart Automation Module
 
-[coupang_cart_agent/cart_executor.py](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-13/coupang_cart_agent/cart_executor.py) consumes `SelectedProduct` inputs and returns `CartAddResult` while stopping at add-to-cart.
+[coupang_cart_agent/cart_executor.py](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-17/coupang_cart_agent/cart_executor.py) consumes `SelectedProduct` inputs and returns `CartAddResult` while stopping at add-to-cart.
+
+- `coupang_cart_agent/cart_adapters.py` contains the split between `DemoCoupangCartPage`, the direct `PlaywrightCoupangCartPage`, and the copied-profile `ChromeCdpCoupangCartPage`.
+- `coupang_cart_agent/cart_persistence.py` persists cart add results and before/after snapshots into SQLite.
 
 ## Integration Flow
 
-[coupang_cart_agent/integration.py](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-13/coupang_cart_agent/integration.py) connects the existing modules without changing their shared interfaces.
+[coupang_cart_agent/integration.py](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-17/coupang_cart_agent/integration.py) connects the existing modules without changing their shared interfaces.
 
 - Input: Telegram-style request text
 - Pipeline: parse request -> load candidates -> score/select -> add to cart -> send notification
@@ -185,6 +192,11 @@ It exposes payload builders aligned with `NotificationPayload`, a bounded format
 
 The demo command is safe for local verification because it uses fake candidate lookup, fake cart page interactions, and a local notification sender. It never reaches real checkout or payment.
 
+For live cart validation, use `cart-live-add` with a real Coupang product URL and inspect the JSON output plus the SQLite record at `CART_DB_PATH`.
+
+- `COUPANG_BROWSER_LAUNCH_MODE=playwright` uses the direct Playwright-managed browser path.
+- `COUPANG_BROWSER_LAUNCH_MODE=cdp_chrome` copies an existing local Chrome profile, launches Chrome separately, and attaches over CDP. This is the validated live path for March 11, 2026 because it restored a real authenticated Coupang session where direct Playwright launches were blocked.
+
 ## Validation
 
 Run:
@@ -214,4 +226,19 @@ Integration-specific validation:
 
 ```bash
 uv run python -m unittest tests.test_integration
+```
+
+Live cart validation example:
+
+```bash
+COUPANG_BROWSER_LAUNCH_MODE=cdp_chrome \
+COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" \
+COUPANG_CHROME_PROFILE_DIRECTORY="Profile 1" \
+uv run python -m coupang_cart_agent cart-live-add \
+  --product-url "https://www.coupang.com/vp/products/7566747125?itemId=24967111280&vendorItemId=91892104543" \
+  --product-id "7566747125" \
+  --name "코카콜라 제로제로, 350ml, 24개" \
+  --price-krw 19940 \
+  --rating 5.0 \
+  --review-count 19723
 ```

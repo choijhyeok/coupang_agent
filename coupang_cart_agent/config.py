@@ -17,6 +17,13 @@ class AppConfig:
     coupang_login_url: str = "https://login.coupang.com/login/login.pang"
     coupang_cart_url: str = "https://cart.coupang.com/cartView.pang"
     default_currency: str = "KRW"
+    cart_db_path: str = ".data/cart_results.sqlite3"
+    coupang_browser_headless: bool = True
+    coupang_storage_state_path: str = ".data/coupang-storage-state.json"
+    coupang_browser_launch_mode: str = "playwright"
+    coupang_chrome_user_data_dir: str | None = None
+    coupang_chrome_profile_directory: str = "Default"
+    coupang_chrome_remote_debugging_port: int = 9223
 
 
 def load_telegram_bot_token(
@@ -87,6 +94,16 @@ def load_config(
             "https://cart.coupang.com/cartView.pang",
         ),
         default_currency=source.get("DEFAULT_CURRENCY", "KRW"),
+        cart_db_path=source.get("CART_DB_PATH", ".data/cart_results.sqlite3"),
+        coupang_browser_headless=source.get("COUPANG_BROWSER_HEADLESS", "true").lower() != "false",
+        coupang_storage_state_path=source.get(
+            "COUPANG_STORAGE_STATE_PATH",
+            ".data/coupang-storage-state.json",
+        ),
+        coupang_browser_launch_mode=source.get("COUPANG_BROWSER_LAUNCH_MODE", "playwright"),
+        coupang_chrome_user_data_dir=source.get("COUPANG_CHROME_USER_DATA_DIR") or None,
+        coupang_chrome_profile_directory=source.get("COUPANG_CHROME_PROFILE_DIRECTORY", "Default"),
+        coupang_chrome_remote_debugging_port=int(source.get("COUPANG_CHROME_REMOTE_DEBUGGING_PORT", "9223")),
     )
 
 

@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "Shared foundation and contracts for the Coupang cart agent"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "playwright>=1.58.0",
+]
 
 [tool.uv]
 package = false

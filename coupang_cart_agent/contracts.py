@@ -111,6 +111,7 @@ class SelectedProduct:
     quantity: int
     selection_reason: str
     score: float
+    option_hints: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
