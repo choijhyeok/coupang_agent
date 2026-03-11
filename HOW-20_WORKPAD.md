@@ -69,3 +69,10 @@
 ### Follow-up Issues Created
 
 - [HOW-21](https://linear.app/choijhyeok/issue/HOW-21/selection-provide-a-real-coupang-candidate-source-for-live-integration)
+
+### Publish
+
+- Branch: `how-20-live-integration-validation`
+- Commit: `6018e1a11afcfff7bb453f2a5dfe3bb906887f5c`
+- Push: `git push -u origin how-20-live-integration-validation`
+- PR: https://github.com/choijhyeok/coupang_agent/pull/12
