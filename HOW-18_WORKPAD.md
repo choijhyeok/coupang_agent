@@ -43,14 +43,19 @@
   - `getWebhookInfo`: no webhook configured
   - `getUpdates`: `[]`
 - Live delivery blocker:
-  - Failed command: `uv run python -m coupang_cart_agent send-telegram-notification --chat-id 8725154905 --scenario failure`
-  - Result: Telegram Bot API `HTTP Error 403: Forbidden`
-  - Missing external input: a real Telegram chat ID for a user/group/channel that has started a conversation with `@coupang_cart_bot`
+- Failed command: `uv run python -m coupang_cart_agent send-telegram-notification --chat-id 8725154905 --scenario failure`
+- Result: Telegram Bot API `HTTP Error 403: Forbidden`
+- Missing external input: a real Telegram chat ID for a user/group/channel that has started a conversation with `@coupang_cart_bot`
 - Local validation complete:
   - `uv run python -m unittest tests.test_notifications`
   - `uv run python -m unittest tests.test_integration`
   - `uv run python -m unittest discover -s tests`
 - DB-backed message validation is covered by `tests.test_notifications.NotificationTests.test_sqlite_notification_context_store_loads_snapshot_and_prior_purchase_rows` and `test_success_message_uses_db_snapshot_and_prior_purchase_context_when_provided`.
+- Publish:
+  - Branch: `how-18-telegram-notifications`
+  - Commit: `62211a0`
+  - Push: `git push -u origin how-18-telegram-notifications`
+  - PR: `https://github.com/choijhyeok/coupang_agent/pull/11`
 
 ### Follow-up Issues Created
 
