@@ -12,8 +12,8 @@ class ConfigError(ValueError):
 @dataclass(slots=True)
 class AppConfig:
     telegram_bot_token: str
-    coupang_username: str
-    coupang_password: str
+    coupang_username: str | None = None
+    coupang_password: str | None = None
     coupang_login_url: str = "https://login.coupang.com/login/login.pang"
     coupang_cart_url: str = "https://cart.coupang.com/cartView.pang"
     default_currency: str = "KRW"
@@ -77,11 +77,7 @@ def load_config(
         **_load_dotenv_values(dotenv_path),
         **(dict(os.environ) if env is None else env),
     }
-    missing = [
-        name
-        for name in ("TELEGRAM_BOT_TOKEN", "COUPANG_USERNAME", "COUPANG_PASSWORD")
-        if not source.get(name)
-    ]
+    missing = [name for name in ("TELEGRAM_BOT_TOKEN",) if not source.get(name)]
     if missing:
         joined = ", ".join(missing)
         raise ConfigError(
@@ -91,8 +87,8 @@ def load_config(
 
     return AppConfig(
         telegram_bot_token=source["TELEGRAM_BOT_TOKEN"],
-        coupang_username=source["COUPANG_USERNAME"],
-        coupang_password=source["COUPANG_PASSWORD"],
+        coupang_username=source.get("COUPANG_USERNAME") or None,
+        coupang_password=source.get("COUPANG_PASSWORD") or None,
         coupang_login_url=source.get(
             "COUPANG_LOGIN_URL",
             "https://login.coupang.com/login/login.pang",

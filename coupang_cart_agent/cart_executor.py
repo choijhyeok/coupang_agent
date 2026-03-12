@@ -17,6 +17,18 @@ class LoginFailedError(RuntimeError):
     """Raised when login or session restoration fails."""
 
 
+class LoginRequiredError(LoginFailedError):
+    """Raised when attach mode lands on a login page or the session is expired."""
+
+
+class SecurityChallengeError(LoginFailedError):
+    """Raised when Coupang presents a security or anti-bot challenge."""
+
+
+class AccessDeniedError(SecurityChallengeError):
+    """Raised when Coupang blocks the attached browser session with Access Denied."""
+
+
 class OutOfStockError(RuntimeError):
     """Raised when the target product cannot be added because it is unavailable."""
 
@@ -31,8 +43,8 @@ class UIElementNotFoundError(RuntimeError):
 
 @dataclass(slots=True)
 class SessionCredentials:
-    username: str
-    password: str
+    username: str | None = None
+    password: str | None = None
 
 
 @dataclass(slots=True)
@@ -44,7 +56,9 @@ class CartSnapshot:
 class CoupangCartPage(Protocol):
     """Browser/page seam for the cart executor."""
 
-    def ensure_session(self, credentials: SessionCredentials) -> str: ...
+    def attach_to_logged_in_session(self, credentials: SessionCredentials | None = None) -> str: ...
+
+    def assert_logged_in(self) -> None: ...
 
     def open_product(self, product_url: str) -> None: ...
 
@@ -73,7 +87,7 @@ class CoupangCartExecutor:
         self,
         *,
         page: CoupangCartPage,
-        credentials: SessionCredentials,
+        credentials: SessionCredentials | None = None,
         result_store: CartResultStore | None = None,
     ) -> None:
         self._page = page
@@ -90,8 +104,9 @@ class CoupangCartExecutor:
     def _add_single(self, selection: SelectedProduct) -> CartAddResult:
         stage = CartAddStage.SESSION
         try:
-            session_mode = self._page.ensure_session(self._credentials)
-            self._audit(stage, "Session ready", session_mode=session_mode)
+            session_mode = self._page.attach_to_logged_in_session(self._credentials)
+            self._page.assert_logged_in()
+            self._audit(stage, "Logged-in session attached", session_mode=session_mode)
 
             stage = CartAddStage.PRODUCT_PAGE
             self._page.open_product(selection.candidate.product_url)
@@ -151,6 +166,27 @@ class CoupangCartExecutor:
             )
             self._persist_result(result)
             return result
+        except LoginRequiredError as exc:
+            return self._failure_result(
+                selection,
+                stage=stage,
+                failure_reason=CartAddFailureReason.LOGIN_REQUIRED,
+                message=str(exc),
+            )
+        except AccessDeniedError as exc:
+            return self._failure_result(
+                selection,
+                stage=stage,
+                failure_reason=CartAddFailureReason.ACCESS_DENIED,
+                message=str(exc),
+            )
+        except SecurityChallengeError as exc:
+            return self._failure_result(
+                selection,
+                stage=stage,
+                failure_reason=CartAddFailureReason.SECURITY_CHALLENGE,
+                message=str(exc),
+            )
         except LoginFailedError as exc:
             return self._failure_result(
                 selection,
@@ -231,7 +267,8 @@ class CoupangCartExecutor:
 
     def _sanitize(self, value: object) -> object:
         if isinstance(value, str):
-            for secret in (self._credentials.username, self._credentials.password):
+            credentials = self._credentials or SessionCredentials()
+            for secret in (credentials.username, credentials.password):
                 if secret and secret in value:
                     return value.replace(secret, "***")
             return value

@@ -20,9 +20,12 @@ class FakeCoupangPage:
         self.failure = failure
         self.calls: list[str] = []
 
-    def ensure_session(self, credentials: SessionCredentials) -> str:
-        self.calls.append("ensure_session")
-        return "existing_session"
+    def attach_to_logged_in_session(self, credentials: SessionCredentials | None = None) -> str:
+        self.calls.append("attach_to_logged_in_session")
+        return "attached_demo_session"
+
+    def assert_logged_in(self) -> None:
+        self.calls.append("assert_logged_in")
 
     def open_product(self, product_url: str) -> None:
         self.calls.append(f"open_product:{product_url}")

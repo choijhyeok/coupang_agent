@@ -11,11 +11,14 @@ import re
 from playwright.sync_api import Browser, BrowserContext, Page, Playwright, TimeoutError, sync_playwright
 
 from .cart_executor import (
+    AccessDeniedError,
     CartSnapshot,
     CoupangCartPage,
     LoginFailedError,
+    LoginRequiredError,
     OptionMismatchError,
     OutOfStockError,
+    SecurityChallengeError,
     SessionCredentials,
     UIElementNotFoundError,
 )
@@ -29,8 +32,11 @@ class DemoCoupangCartPage:
         self._should_fail = should_fail
         self._snapshots = 0
 
-    def ensure_session(self, credentials: SessionCredentials) -> str:
-        return "existing_session"
+    def attach_to_logged_in_session(self, credentials: SessionCredentials | None = None) -> str:
+        return "attached_demo_session"
+
+    def assert_logged_in(self) -> None:
+        return None
 
     def open_product(self, product_url: str) -> None:
         return None
@@ -107,33 +113,40 @@ class PlaywrightCoupangCartPage:
         self._context = None
         self._page = None
 
-    def ensure_session(self, credentials: SessionCredentials) -> str:
+    def attach_to_logged_in_session(self, credentials: SessionCredentials | None = None) -> str:
         page = self._page_object()
-        if page.url and page.url != "about:blank" and self._is_logged_in():
-            return "existing_session"
+        if page.url and page.url != "about:blank":
+            self._assert_no_session_blockers(page)
+            if self._is_logged_in(page):
+                return self._attached_session_mode()
 
-        page.goto(self._settings.login_url, wait_until="domcontentloaded")
+        page.goto(self._settings.cart_url, wait_until="domcontentloaded")
         page.wait_for_timeout(1500)
-        if self._is_access_denied():
-            raise LoginFailedError("Coupang blocked the automated browser session with Access Denied.")
-        if self._is_logged_in():
-            return "restored_session"
+        self._assert_no_session_blockers(page)
+        if self._is_logged_in(page):
+            return self._attached_session_mode()
 
-        self._fill_login_form(credentials)
-        page.wait_for_timeout(2000)
-        if self._is_access_denied():
-            raise LoginFailedError("Coupang blocked the automated browser session with Access Denied.")
-        if not self._is_logged_in():
-            raise LoginFailedError("Login failed for configured Coupang account.")
-        return "fresh_login"
+        raise LoginRequiredError(
+            "Attach mode requires an operator-prepared logged-in Coupang session."
+        )
+
+    def assert_logged_in(self) -> None:
+        page = self._page_object()
+        self._assert_no_session_blockers(page)
+        if not self._is_logged_in(page):
+            raise LoginRequiredError(
+                "Attach mode requires an operator-prepared logged-in Coupang session."
+            )
 
     def open_product(self, product_url: str) -> None:
         page = self._page_object()
         page.goto(product_url, wait_until="domcontentloaded")
         page.wait_for_timeout(2500)
+        self._assert_no_session_blockers(page)
 
     def assert_in_stock(self) -> None:
         page = self._page_object()
+        self._assert_no_session_blockers(page)
         sold_out_tokens = ("품절", "일시품절", "재입고 알림")
         page_text = page.locator("body").inner_text(timeout=5000)
         if any(token in page_text for token in sold_out_tokens):
@@ -145,6 +158,7 @@ class PlaywrightCoupangCartPage:
     def select_options(self, selection: SelectedProduct) -> dict[str, str]:
         selected_options = {"quantity": str(selection.quantity)}
         page = self._page_object()
+        self._assert_no_session_blockers(page)
         for _, value in selection.option_hints.items():
             if self._click_first(
                 (
@@ -165,6 +179,7 @@ class PlaywrightCoupangCartPage:
         try:
             cart_page.goto(self._settings.cart_url, wait_until="domcontentloaded")
             cart_page.wait_for_timeout(3000)
+            self._assert_no_session_blockers(cart_page)
             count = self._extract_cart_count(cart_page)
             return CartSnapshot(item_count=count, summary=f"cart_count={count}")
         finally:
@@ -175,7 +190,9 @@ class PlaywrightCoupangCartPage:
     def add_to_cart(self) -> str:
         button = self._find_add_to_cart_button(optional=False)
         self._click_add_to_cart_button(button)
-        self._page_object().wait_for_timeout(1500)
+        page = self._page_object()
+        page.wait_for_timeout(1500)
+        self._assert_no_session_blockers(page)
         return f"{self._product_slug(self._page_object().url)}:cart-add"
 
     def checkout_started(self) -> bool:
@@ -201,41 +218,6 @@ class PlaywrightCoupangCartPage:
         assert self._context is not None
         return self._context
 
-    def _fill_login_form(self, credentials: SessionCredentials) -> None:
-        page = self._page_object()
-        if not self._click_first(
-            (
-                lambda: page.get_by_placeholder("아이디(이메일)"),
-                lambda: page.locator("input[type='email']"),
-                lambda: page.locator("input[name='email']"),
-                lambda: page.locator("input[name='id']"),
-                lambda: page.locator("#login-email-input"),
-            ),
-            action=lambda locator: locator.fill(credentials.username),
-        ):
-            raise UIElementNotFoundError("Coupang login username field not found.")
-
-        if not self._click_first(
-            (
-                lambda: page.get_by_placeholder("비밀번호"),
-                lambda: page.locator("input[type='password']"),
-                lambda: page.locator("input[name='password']"),
-                lambda: page.locator("#login-password-input"),
-            ),
-            action=lambda locator: locator.fill(credentials.password),
-        ):
-            raise UIElementNotFoundError("Coupang login password field not found.")
-
-        if not self._click_first(
-            (
-                lambda: page.get_by_role("button", name="로그인", exact=False),
-                lambda: page.locator("button[type='submit']"),
-                lambda: page.locator("input[type='submit']"),
-            ),
-            action=lambda locator: locator.click(),
-        ):
-            raise UIElementNotFoundError("Coupang login submit button not found.")
-
     def _find_add_to_cart_button(self, *, optional: bool) -> object:
         page = self._page_object()
         button = self._first_locator(
@@ -251,6 +233,7 @@ class PlaywrightCoupangCartPage:
         return button
 
     def _extract_cart_count(self, page: Page) -> int:
+        self._assert_no_session_blockers(page)
         strategies: tuple[Callable[[], int | None], ...] = (
             lambda: self._count_locator(page.locator("[data-cart-item-id]")),
             lambda: self._count_locator(page.locator("[class*='cart-item']")),
@@ -278,36 +261,90 @@ class PlaywrightCoupangCartPage:
         except TimeoutError:
             return None
 
-    def _is_logged_in(self) -> bool:
-        page = self._page_object()
-        if not page.url or page.url == "about:blank":
+    def _is_logged_in(self, page: Page | None = None) -> bool:
+        active_page = page or self._page_object()
+        if not active_page.url or active_page.url == "about:blank":
             return False
-        if "login" not in page.url.lower():
+        if "login" not in active_page.url.lower():
             return self._first_locator(
                 (
-                    lambda: page.get_by_role("link", name="로그아웃", exact=False),
-                    lambda: page.get_by_text("마이쿠팡", exact=False),
-                    lambda: page.get_by_text("로그아웃", exact=False),
+                    lambda: active_page.get_by_role("link", name="로그아웃", exact=False),
+                    lambda: active_page.get_by_text("마이쿠팡", exact=False),
+                    lambda: active_page.get_by_text("로그아웃", exact=False),
                 )
             ) is not None
         return self._first_locator(
             (
-                lambda: page.get_by_role("link", name="로그아웃", exact=False),
-                lambda: page.get_by_text("마이쿠팡", exact=False),
-                lambda: page.get_by_text("로그아웃", exact=False),
+                lambda: active_page.get_by_role("link", name="로그아웃", exact=False),
+                lambda: active_page.get_by_text("마이쿠팡", exact=False),
+                lambda: active_page.get_by_text("로그아웃", exact=False),
             )
         ) is not None
 
-    def _is_access_denied(self) -> bool:
-        page = self._page_object()
-        if "access denied" in page.title().lower():
+    def _is_access_denied(self, page: Page | None = None) -> bool:
+        active_page = page or self._page_object()
+        if "access denied" in active_page.title().lower():
             return True
         try:
-            body = page.locator("body").inner_text(timeout=2000)
+            body = active_page.locator("body").inner_text(timeout=2000)
         except Exception:
             return False
         lowered = body.lower()
         return "access denied" in lowered and "permission" in lowered
+
+    def _is_login_page(self, page: Page | None = None) -> bool:
+        active_page = page or self._page_object()
+        url = active_page.url.lower()
+        if "login.coupang.com" in url or "/login/" in url:
+            return True
+        title = active_page.title().lower()
+        return "login" in title and "coupang" in title
+
+    def _is_security_challenge(self, page: Page | None = None) -> bool:
+        active_page = page or self._page_object()
+        fragments: list[str] = [active_page.url.lower()]
+        try:
+            fragments.append(active_page.title().lower())
+        except Exception:
+            pass
+        try:
+            fragments.append(active_page.locator("body").inner_text(timeout=2000).lower())
+        except Exception:
+            pass
+        combined = " ".join(fragments)
+        challenge_tokens = (
+            "captcha",
+            "security verification",
+            "security check",
+            "verify you are human",
+            "로봇이 아닙니다",
+            "보안문자",
+            "보안 인증",
+            "본인인증",
+            "이상 접근",
+            "자동화된 접근",
+        )
+        return any(token in combined for token in challenge_tokens)
+
+    def _assert_no_session_blockers(self, page: Page | None = None) -> None:
+        active_page = page or self._page_object()
+        if self._is_access_denied(active_page):
+            raise AccessDeniedError(
+                "Attach mode was blocked by Coupang Access Denied. Use an operator-approved logged-in Chrome session."
+            )
+        if self._is_security_challenge(active_page):
+            raise SecurityChallengeError(
+                "Attach mode encountered a Coupang security challenge. Operator re-authentication is required."
+            )
+        if self._is_login_page(active_page) and not self._is_logged_in(active_page):
+            raise LoginRequiredError(
+                "Attach mode reached the Coupang login page. Prepare a logged-in Chrome session before running automation."
+            )
+
+    def _attached_session_mode(self) -> str:
+        if self._settings.storage_state_path and Path(self._settings.storage_state_path).exists():
+            return "attached_storage_state"
+        return "attached_browser_session"
 
     def _click_first(self, factories, *, action=None) -> bool:
         locator = self._first_locator(factories)
@@ -447,6 +484,65 @@ class ChromeCdpCoupangCartPage(PlaywrightCoupangCartPage):
         assert last_error is not None
         raise last_error
 
+    def _attached_session_mode(self) -> str:
+        return "attached_cdp_profile"
+
+
+class ExistingChromeCdpCoupangCartPage(PlaywrightCoupangCartPage):
+    """Attach to an already running operator Chrome session over CDP."""
+
+    def __init__(
+        self,
+        *,
+        settings: PlaywrightCoupangSettings,
+        remote_debugging_port: int,
+    ) -> None:
+        super().__init__(settings)
+        self._remote_debugging_port = remote_debugging_port
+
+    def close(self) -> None:
+        if self._browser is not None:
+            self._browser.close()
+        if self._playwright_cm is not None:
+            self._playwright_cm.__exit__(None, None, None)
+        self._playwright_cm = None
+        self._playwright = None
+        self._browser = None
+        self._context = None
+        self._page = None
+
+    def _page_object(self) -> Page:
+        if self._page is None:
+            self._playwright_cm = sync_playwright()
+            self._playwright = self._playwright_cm.__enter__()
+            self._browser = self._connect_browser_with_retry()
+            if self._browser.contexts:
+                self._context = self._browser.contexts[0]
+            else:
+                self._context = self._browser.new_context()
+            self._context.set_default_timeout(self._settings.navigation_timeout_ms)
+            self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
+        return self._page
+
+    def _connect_browser_with_retry(self) -> Browser:
+        last_error: Exception | None = None
+        endpoint = f"http://127.0.0.1:{self._remote_debugging_port}"
+        for _ in range(10):
+            try:
+                assert self._playwright is not None
+                return self._playwright.chromium.connect_over_cdp(endpoint)
+            except Exception as exc:
+                last_error = exc
+                time.sleep(0.5)
+        assert last_error is not None
+        raise LoginFailedError(
+            f"Could not attach to an operator Chrome session at {endpoint}. "
+            "Start Chrome with --remote-debugging-port and log in to Coupang before running automation."
+        ) from last_error
+
+    def _attached_session_mode(self) -> str:
+        return "attached_existing_cdp_session"
+
 
 class BrowserUseCoupangCartPage(ChromeCdpCoupangCartPage):
     """Real Chrome profile path aligned with browser-use's operator model."""
@@ -467,3 +563,6 @@ class BrowserUseCoupangCartPage(ChromeCdpCoupangCartPage):
                 chrome_binary_path=browser_use_settings.chrome_binary_path,
             ),
         )
+
+    def _attached_session_mode(self) -> str:
+        return "attached_browser_use_profile"
