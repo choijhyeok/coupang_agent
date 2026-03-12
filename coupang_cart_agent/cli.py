@@ -559,11 +559,36 @@ def main(argv: list[str] | None = None) -> int:
         )
         page = build_live_cart_page(runtime_config)
         try:
+            try:
+                session_mode = page.attach_to_logged_in_session(None)
+            except Exception as exc:
+                session_mode = None
+                observation = page.observe(step_index=1)
+                payload = {
+                    "launch_mode": config.coupang_browser_launch_mode,
+                    "chrome_profile_directory": config.coupang_chrome_profile_directory,
+                    "attach_mode_requires_operator_login": True,
+                    "session_mode": session_mode,
+                    "error": str(exc),
+                    "error_type": exc.__class__.__name__,
+                    "url": observation.url,
+                    "title": observation.title,
+                    "page_kind": observation.page_kind,
+                    "blocker_hint": observation.blocker_hint,
+                    "body_text_excerpt": observation.body_text_excerpt,
+                    "interactive_elements": observation.interactive_elements,
+                    "available_options": observation.available_options,
+                    "add_to_cart_visible": observation.add_to_cart_visible,
+                    "cart_count": observation.cart_count,
+                }
+                print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+                return 2
             observation = page.observe(step_index=1)
             payload = {
                 "launch_mode": config.coupang_browser_launch_mode,
                 "chrome_profile_directory": config.coupang_chrome_profile_directory,
                 "attach_mode_requires_operator_login": True,
+                "session_mode": session_mode,
                 "url": observation.url,
                 "title": observation.title,
                 "page_kind": observation.page_kind,
