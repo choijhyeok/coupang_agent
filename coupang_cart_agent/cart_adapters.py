@@ -488,6 +488,62 @@ class ChromeCdpCoupangCartPage(PlaywrightCoupangCartPage):
         return "attached_cdp_profile"
 
 
+class ExistingChromeCdpCoupangCartPage(PlaywrightCoupangCartPage):
+    """Attach to an already running operator Chrome session over CDP."""
+
+    def __init__(
+        self,
+        *,
+        settings: PlaywrightCoupangSettings,
+        remote_debugging_port: int,
+    ) -> None:
+        super().__init__(settings)
+        self._remote_debugging_port = remote_debugging_port
+
+    def close(self) -> None:
+        if self._browser is not None:
+            self._browser.close()
+        if self._playwright_cm is not None:
+            self._playwright_cm.__exit__(None, None, None)
+        self._playwright_cm = None
+        self._playwright = None
+        self._browser = None
+        self._context = None
+        self._page = None
+
+    def _page_object(self) -> Page:
+        if self._page is None:
+            self._playwright_cm = sync_playwright()
+            self._playwright = self._playwright_cm.__enter__()
+            self._browser = self._connect_browser_with_retry()
+            if self._browser.contexts:
+                self._context = self._browser.contexts[0]
+            else:
+                self._context = self._browser.new_context()
+            self._context.set_default_timeout(self._settings.navigation_timeout_ms)
+            self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
+        return self._page
+
+    def _connect_browser_with_retry(self) -> Browser:
+        last_error: Exception | None = None
+        endpoint = f"http://127.0.0.1:{self._remote_debugging_port}"
+        for _ in range(10):
+            try:
+                assert self._playwright is not None
+                return self._playwright.chromium.connect_over_cdp(endpoint)
+            except Exception as exc:
+                last_error = exc
+                time.sleep(0.5)
+        assert last_error is not None
+        raise LoginFailedError(
+            f"Could not attach to an operator Chrome session at {endpoint}. "
+            "Start Chrome with --remote-debugging-port and log in to Coupang before running automation."
+        ) from last_error
+
+    def _attached_session_mode(self) -> str:
+        return "attached_existing_cdp_session"
+
+
 class BrowserUseCoupangCartPage(ChromeCdpCoupangCartPage):
     """Real Chrome profile path aligned with browser-use's operator model."""
 

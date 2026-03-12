@@ -12,7 +12,8 @@
 1. Finish the attach-only Coupang cart execution path and preserve existing contracts.
 2. Tighten blocker detection for login redirect, security challenge, and Access Denied during cart work.
 3. Update CLI/docs/config examples to reflect operator-prepared logged-in Chrome attach mode.
-4. Run focused validation, then publish branch/commit status and blockers.
+4. Cover both attach targets required by the issue: copied profile attach and already-running Chrome session attach.
+5. Run focused validation, then publish branch/commit status and blockers.
 
 ### Acceptance Criteria
 
@@ -38,6 +39,12 @@
 - [x] Live attach-mode evidence or explicit blocker evidence
   - `COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Profile 1' uv run python -m coupang_cart_agent cart-live-add --product-url 'https://www.coupang.com/vp/products/8049869159' --product-id '8049869159' --name '국내산 햇 양파, 5kg, 1개' --price-krw 13610 --rating 4.6 --review-count 146522 --vendor '탐사'`
   - Result: structured blocker with `failure_reason=login_required`, `stage=session`, `launch_mode=browser_use`, `chrome_profile_directory=Profile 1`, `attach_mode_requires_operator_login=true`
+- [x] Existing-session attach evidence
+  - Start operator Chrome session for CDP attach:
+    `mkdir -p /tmp/how23-existing-cdp-profile && "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --user-data-dir=/tmp/how23-existing-cdp-profile --remote-debugging-port=9223 about:blank`
+  - Attach through the new mode:
+    `COUPANG_BROWSER_LAUNCH_MODE=existing_cdp COUPANG_CHROME_REMOTE_DEBUGGING_PORT=9223 uv run python -m coupang_cart_agent cart-live-add --product-url 'https://www.coupang.com/vp/products/8049869159' --product-id '8049869159' --name '국내산 햇 양파, 5kg, 1개' --price-krw 13610 --rating 4.6 --review-count 146522 --vendor '탐사'`
+  - Result: structured blocker with `failure_reason=login_required`, `stage=session`, `launch_mode=existing_cdp`, `attach_mode_requires_operator_login=true`
 - [x] Branch / commit / publish status recorded
   - Branch: `wowogur12/how-23-coupang-attach-mode`
   - Commit SHA is recorded in the Linear issue workpad comment for the latest published HEAD.
@@ -49,6 +56,7 @@
 - Existing uncommitted attach-mode changes were already present in the worktree and are being preserved.
 - `coupang_cart_agent_cca14_runbook.md` is not present in this workspace.
 - Fresh live add-to-cart success was not reproducible on 2026-03-12 because the locally attached `Profile 1` session was no longer logged in to Coupang. The code now records this as a structured blocker instead of crashing.
+- Added `existing_cdp` launch mode so operators can attach to an already running Chrome session, not only a copied profile.
 
 ### Follow-up Issues Created
 

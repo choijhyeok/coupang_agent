@@ -135,6 +135,12 @@ The `browser_use` mode is the preferred live path in this repository. It uses a 
 
 `Default` returned `Access Denied` in this workspace. `Profile 1` restored the authenticated Coupang session and completed add-to-cart successfully. Keep `playwright` only as a debugging fallback for selector work, not as the primary live path.
 
+Supported attach launch modes:
+
+- `browser_use`: copy a trusted local Chrome profile and run the agent against that attached profile
+- `cdp_chrome`: launch a copied Chrome profile under CDP from the agent process
+- `existing_cdp`: connect to an already running operator Chrome started with `--remote-debugging-port`
+
 ### Attach Mode Operating Rules
 
 The live cart automation runs in attach mode only:
@@ -158,6 +164,20 @@ uv run python -m coupang_cart_agent cart-live-add \
 ```
 
 `cart-live-add` prints `attach_mode_requires_operator_login: true` and the active Chrome profile directory so operators can confirm the run started from an already prepared session.
+
+If the operator wants to attach to the exact running Chrome session instead of a copied profile, start Chrome manually with remote debugging enabled and switch the launch mode:
+
+```bash
+/Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome \
+  --remote-debugging-port=9223
+
+COUPANG_BROWSER_LAUNCH_MODE=existing_cdp \
+COUPANG_CHROME_REMOTE_DEBUGGING_PORT=9223 \
+uv run python -m coupang_cart_agent cart-live-add \
+  --product-url "https://www.coupang.com/vp/products/..." \
+  --product-id "..." \
+  --name "..."
+```
 
 ## Docker Compose
 

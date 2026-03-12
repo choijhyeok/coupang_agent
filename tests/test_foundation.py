@@ -21,7 +21,8 @@ from coupang_cart_agent.cart_executor import (
     SessionCredentials,
     UIElementNotFoundError,
 )
-from coupang_cart_agent.cli import main
+from coupang_cart_agent.cart_adapters import ExistingChromeCdpCoupangCartPage
+from coupang_cart_agent.cli import build_live_cart_page, main
 from coupang_cart_agent.config import ConfigError, load_config, load_telegram_bot_token
 from coupang_cart_agent.contracts import (
     CartAddFailureReason,
@@ -119,6 +120,32 @@ class FoundationTests(unittest.TestCase):
         self.assertEqual(config.coupang_chrome_profile_directory, "Profile 1")
         self.assertEqual(config.coupang_chrome_remote_debugging_port, 9555)
         self.assertEqual(config.coupang_storage_state_path, "/tmp/coupang-state.json")
+
+    def test_build_live_cart_page_supports_existing_cdp_without_user_data_dir(self) -> None:
+        config = load_config(
+            {
+                "TELEGRAM_BOT_TOKEN": "env-token",
+                "COUPANG_BROWSER_LAUNCH_MODE": "existing_cdp",
+                "COUPANG_CHROME_REMOTE_DEBUGGING_PORT": "9555",
+            }
+        )
+
+        page = build_live_cart_page(config)
+
+        self.assertIsInstance(page, ExistingChromeCdpCoupangCartPage)
+
+    def test_build_live_cart_page_requires_user_data_dir_for_copied_profile_modes(self) -> None:
+        config = load_config(
+            {
+                "TELEGRAM_BOT_TOKEN": "env-token",
+                "COUPANG_BROWSER_LAUNCH_MODE": "browser_use",
+            }
+        )
+
+        with self.assertRaises(ConfigError) as context:
+            build_live_cart_page(config)
+
+        self.assertIn("COUPANG_CHROME_USER_DATA_DIR", str(context.exception))
 
     def test_load_telegram_bot_token_reads_only_bot_token(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

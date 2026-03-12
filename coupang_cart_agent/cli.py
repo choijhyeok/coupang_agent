@@ -19,6 +19,7 @@ from .cart_adapters import (
     ChromeCdpCoupangCartPage,
     ChromeCdpSettings,
     DemoCoupangCartPage,
+    ExistingChromeCdpCoupangCartPage,
     PlaywrightCoupangCartPage,
     PlaywrightCoupangSettings,
 )
@@ -177,6 +178,11 @@ def build_live_cart_page(config):
                 remote_debugging_port=config.coupang_chrome_remote_debugging_port,
                 copied_user_data_dir=".data/chrome-userdata-cdp",
             ),
+        )
+    if config.coupang_browser_launch_mode == "existing_cdp":
+        return ExistingChromeCdpCoupangCartPage(
+            settings=playwright_settings,
+            remote_debugging_port=config.coupang_chrome_remote_debugging_port,
         )
     return PlaywrightCoupangCartPage(playwright_settings)
 
