@@ -587,6 +587,20 @@ class PlaywrightCoupangCartPage:
         active_page = page or self._page_object()
         if not active_page.url or active_page.url == "about:blank":
             return False
+        lowered_url = active_page.url.lower()
+        if (
+            "cart.coupang.com/cartview.pang" in lowered_url
+            or "/cartview.pang" in lowered_url
+        ) and not self._is_login_page(active_page):
+            body = self._safe_inner_text(active_page)
+            login_prompt_tokens = (
+                "로그인을 하시면",
+                "로그인하기",
+                "로그인이 필요합니다",
+            )
+            if any(token in body for token in login_prompt_tokens):
+                return False
+            return True
         if "login" not in active_page.url.lower():
             return self._first_locator(
                 (

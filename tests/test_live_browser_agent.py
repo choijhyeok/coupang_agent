@@ -20,6 +20,7 @@ from coupang_cart_agent.live_browser_agent import (
 )
 from coupang_cart_agent.live_workflow import CoupangCartAgentLiveWorkflow, InMemoryOperationalStore
 from coupang_cart_agent.notifications import RetryingNotificationService
+from coupang_cart_agent.cart_executor import LoginRequiredError
 
 
 class FakeCartSnapshot:
@@ -80,6 +81,14 @@ class StaticShoppingAgent:
     def run(self, *, request, search_queries, operator_note, selection_brief):
         self.calls += 1
         return self.result
+
+
+class RaisingShoppingAgent:
+    def __init__(self, exc: Exception) -> None:
+        self.exc = exc
+
+    def run(self, *, request, search_queries, operator_note, selection_brief):
+        raise self.exc
 
 
 class LiveBrowserAgentTests(unittest.TestCase):
@@ -324,6 +333,32 @@ class BrowserWorkflowIntegrationTests(unittest.TestCase):
         self.assertEqual(driver.executed_actions, ["search", "click", "add_to_cart"])
         self.assertIn("장바구니 담기를 완료했습니다.", delivered_messages[0][1])
         self.assertEqual(store.runs[-1]["agent_reasoning_summary"], "Completed browser-guided shopping flow.")
+
+    def test_live_workflow_classifies_browser_agent_login_blocker(self) -> None:
+        delivered_messages: list[tuple[str, str]] = []
+
+        def sender(chat_id: str, text: str) -> None:
+            delivered_messages.append((chat_id, text))
+
+        store = InMemoryOperationalStore()
+        workflow = CoupangCartAgentLiveWorkflow(
+            candidate_source=lambda request: {},
+            cart_service=None,
+            notification_service=RetryingNotificationService(sender=sender, max_attempts=1),
+            operational_store=store,
+            agent_planner=StaticPlanner(),
+            shopping_agent=RaisingShoppingAgent(
+                LoginRequiredError("Attach mode requires an operator-prepared logged-in Coupang session.")
+            ),
+            checkpointer=None,
+        )
+
+        result = workflow.run_envelope(self._envelope())
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.failed_stage, "session")
+        self.assertEqual(result.cart_results[0].failure_reason, CartAddFailureReason.LOGIN_REQUIRED)
+        self.assertIn("login_required", delivered_messages[0][1])
 
 
 if __name__ == "__main__":

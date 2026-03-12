@@ -34,7 +34,7 @@
   - Result: `Ran 5 tests ... OK`
 - [x] Full automated regression relevant to touched modules
   - `uv run python -m unittest discover -s tests`
-  - Result: `Ran 63 tests ... OK`
+  - Result: `Ran 64 tests ... OK`
 - [x] Bytecode / import sanity
   - `uv run python -m compileall coupang_cart_agent tests`
   - Result: completed successfully
@@ -44,10 +44,13 @@
 - [ ] Access Denied or security challenge blocker evidence 1건
 - [x] Option ambiguity or out-of-stock safe failure evidence 1건
   - Automated evidence: `tests.test_live_browser_agent.LiveBrowserAgentTests.test_agent_stops_on_option_ambiguity`
+- [x] Fresh live login/session blocker evidence 1건
+  - `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=existing_cdp COUPANG_CHROME_REMOTE_DEBUGGING_PORT=9223 uv run python -m coupang_cart_agent integration-live-request '양파 1개 담아줘' --user-id telegram:8201584878 --chat-id 8201584878`
+  - Result: structured failure with `failed_stage=session`, `failure_reason=login_required`, and Telegram failure notification delivered to chat `8201584878`
 - [ ] Telegram request -> agent -> Coupang cart -> Telegram reply evidence 1건
 - [x] Branch / commit / publish status recorded
   - Branch: `wowogur12/how-24-coupang-aoai-live-web-shopping-agent-for-real-time-search`
-  - Commit: `2df30de`
+  - Commit: `c5d4487`
   - Push: `git push -u origin wowogur12/how-24-coupang-aoai-live-web-shopping-agent-for-real-time-search`
   - PR: `https://github.com/choijhyeok/coupang_agent/pull/15`
 
@@ -58,6 +61,10 @@
 - Live attempt:
   - `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Profile 1' uv run python -m coupang_cart_agent integration-live-request '양파 1개 담아줘' --user-id telegram:cli-user --chat-id cli-chat`
   - Result: did not complete within 60 seconds in this workspace; fresh live success/blocker evidence still needs operator-session validation.
+- Live diagnosis after switching to `existing_cdp`:
+  - CDP endpoint `http://127.0.0.1:9223/json/version` was reachable.
+  - Attached page showed `https://cart.coupang.com/cartView.pang` but the body contained `로그인하기`, so the current operator session was not actually authenticated for cart actions.
+  - Tightened workflow classification so this state records `session/login_required` instead of a generic `browser_agent` failure.
 - `docker compose up -d postgres` could not be used because port `5432` was already allocated by another local Docker process; the existing local Postgres instance at `postgresql://postgres:postgres@localhost:5432/coupang_cart_agent` was reachable and used for validation instead.
 
 ### Follow-up Issues Created

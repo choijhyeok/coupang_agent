@@ -7,6 +7,15 @@ from typing import Protocol, TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from .azure_openai import AgentPlan, AgentSearchQuery, AzureOpenAIPlanner
+from .cart_executor import (
+    AccessDeniedError,
+    LoginFailedError,
+    LoginRequiredError,
+    OptionMismatchError,
+    OutOfStockError,
+    SecurityChallengeError,
+    UIElementNotFoundError,
+)
 from .contracts import (
     BrowserAgentStep,
     BrowserObservation,
@@ -323,9 +332,16 @@ class CoupangCartAgentLiveWorkflow:
                 selection_brief=plan.selection_brief,
             )
         except Exception as exc:
+            classified = _classified_browser_agent_failure(request=request, exc=exc)
             return {
-                "failed_stage": "browser_agent",
-                "failure_message": str(exc),
+                "selections": [_selected_product_to_dict(classified.selected_product)],
+                "cart_results": [_cart_result_to_dict(classified)],
+                "agent_steps": [],
+                "agent_reasoning_summary": str(exc),
+                "last_observation": {},
+                "success": False,
+                "failed_stage": classified.stage.value,
+                "failure_message": classified.message,
             }
 
         first_failure = next((result for result in run.cart_results if not result.success), None)
@@ -700,6 +716,62 @@ def _browser_agent_step_to_dict(step: BrowserAgentStep) -> dict[str, object]:
         "action": asdict(step.action),
         "execution_summary": step.execution_summary,
     }
+
+
+def _classified_browser_agent_failure(
+    *,
+    request: ShoppingRequest,
+    exc: Exception,
+) -> CartAddResult:
+    failure_reason = CartAddFailureReason.UNKNOWN
+    if isinstance(exc, LoginRequiredError):
+        failure_reason = CartAddFailureReason.LOGIN_REQUIRED
+    elif isinstance(exc, AccessDeniedError):
+        failure_reason = CartAddFailureReason.ACCESS_DENIED
+    elif isinstance(exc, SecurityChallengeError):
+        failure_reason = CartAddFailureReason.SECURITY_CHALLENGE
+    elif isinstance(exc, LoginFailedError):
+        failure_reason = CartAddFailureReason.LOGIN_FAILED
+    elif isinstance(exc, OutOfStockError):
+        failure_reason = CartAddFailureReason.OUT_OF_STOCK
+    elif isinstance(exc, OptionMismatchError):
+        failure_reason = CartAddFailureReason.OPTION_MISMATCH
+    elif isinstance(exc, UIElementNotFoundError):
+        failure_reason = CartAddFailureReason.UI_ELEMENT_NOT_FOUND
+
+    stage = CartAddStage.SESSION
+    if failure_reason == CartAddFailureReason.OUT_OF_STOCK:
+        stage = CartAddStage.PRODUCT_PAGE
+    elif failure_reason == CartAddFailureReason.OPTION_MISMATCH:
+        stage = CartAddStage.OPTION_SELECTION
+    elif failure_reason == CartAddFailureReason.UI_ELEMENT_NOT_FOUND:
+        stage = CartAddStage.PRODUCT_PAGE
+
+    item = request.items[0]
+    fallback_selection = SelectedProduct(
+        request_item_name=item.name,
+        candidate=ProductCandidate(
+            product_id=f"pending-{item.name}",
+            name=item.name,
+            price_krw=0,
+            rating=0.0,
+            review_count=0,
+            product_url="",
+            vendor="Coupang",
+        ),
+        quantity=item.quantity,
+        selection_reason="Browser agent stopped before a product could be selected.",
+        score=0.0,
+    )
+    return CartAddResult(
+        success=False,
+        cart_item_id=None,
+        selected_product=fallback_selection,
+        stage=stage,
+        message=str(exc),
+        failure_reason=failure_reason,
+        evidence={"exception_type": exc.__class__.__name__},
+    )
 
 
 def _selection_context_to_dict(context: SelectionContext) -> dict[str, object]:
