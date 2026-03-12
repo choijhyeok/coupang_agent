@@ -74,6 +74,9 @@
 - Direct launch attempt with the real local profile:
   - `"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --user-data-dir="$HOME/Library/Application Support/Google/Chrome" --profile-directory='Profile 1' --remote-debugging-port=9224 --no-first-run --no-default-browser-check about:blank`
   - Result: Chrome process exited immediately, `http://127.0.0.1:9224` was never reachable, so this workspace could not produce a fresh authenticated `Profile 1` CDP session automatically.
+- Cookie metadata check on local `Profile 1`:
+  - `sqlite3 "$HOME/Library/Application Support/Google/Chrome/Profile 1/Cookies" "select host_key, name, length(encrypted_value) from cookies where host_key like '%coupang%' order by host_key, name limit 50;"`
+  - Result: Coupang-related cookies such as `.coupang.com|sid`, `.coupang.com|web-session-id`, and `.coupang.com|member_srl` are present in the profile DB, so the current blocker is not “no Coupang cookies at all” but “the attached browser session still fails Coupang auth/session checks for cart actions”.
 - GitHub auth instability was observed mid-run (`gh auth status` reported invalid keychain tokens and one `git push` returned HTTP 403), but the latest retry succeeded and branch HEAD is now published.
 - `docker compose up -d postgres` could not be used because port `5432` was already allocated by another local Docker process; the existing local Postgres instance at `postgresql://postgres:postgres@localhost:5432/coupang_cart_agent` was reachable and used for validation instead.
 
