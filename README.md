@@ -1,6 +1,6 @@
 # Coupang Cart Agent
 
-Telegram shopping requests flow into product selection, Coupang add-to-cart automation, and Telegram notifications. This workspace keeps the module contracts stable while adding a production-shaped integration path with LangGraph state persistence, Azure OpenAI planning, and PostgreSQL operational storage.
+Telegram shopping requests flow into an AOAI-guided live browser shopping agent, Coupang add-to-cart automation, and Telegram notifications. This workspace keeps the module contracts stable while adding a production-shaped integration path with LangGraph state persistence, Azure OpenAI planning/decision nodes, and PostgreSQL operational storage.
 
 ## Project Layout
 
@@ -17,6 +17,7 @@ Telegram shopping requests flow into product selection, Coupang add-to-cart auto
 │   ├── contracts.py
 │   ├── http_server.py
 │   ├── integration.py
+│   ├── live_browser_agent.py
 │   ├── live_workflow.py
 │   ├── notifications.py
 │   ├── postgres_store.py
@@ -51,9 +52,10 @@ Production-shaped integration. Uses:
 
 - Telegram Bot API intake
 - LangGraph workflow checkpoints in PostgreSQL
-- Azure OpenAI planning node
-- heuristic product selection
-- real Coupang cart automation
+- Azure OpenAI planning node plus constrained browser-action decisions
+- observation-driven browser agent for search -> result selection -> option handling -> add-to-cart
+- candidate-source fallback only for preflight/debugging
+- real Coupang cart automation on an attached logged-in Chrome session
 - real Telegram notifications
 
 Primary live commands:
@@ -81,9 +83,9 @@ uv run python -m coupang_cart_agent integration-live-telegram-worker \
 1. poll Telegram once
 2. parse the first valid request
 3. run the live LangGraph workflow
-4. add the selected product to the Coupang cart
+4. let the AOAI browser agent search Coupang live, choose a product, and add it to the cart
 5. send a Telegram notification
-6. persist workflow state and cart/session history to PostgreSQL
+6. persist workflow state, agent reasoning summary, last observation, and cart/session history to PostgreSQL
 
 `integration-live-telegram-worker` is the always-on operator path:
 
@@ -109,11 +111,11 @@ Required for the live workflow:
 - `AZURE_OPENAI_DEPLOYMENT`
 - `POSTGRES_DSN`
 
-Required for real candidate lookup:
+Optional fallback-only preflight input:
 
 - `COUPANG_SEARCH_ENDPOINT`
 
-If `COUPANG_SEARCH_ENDPOINT` is not available, you can pass `--fixture-path` to the live commands for operator preflight only:
+If you want to force the old candidate-source fallback for operator preflight or debugging, you can pass `--fixture-path` to the live commands:
 
 ```bash
 uv run python -m coupang_cart_agent integration-live-request \
@@ -121,7 +123,7 @@ uv run python -m coupang_cart_agent integration-live-request \
   --fixture-path tests/fixtures/coupang_search_onion_fixture.json
 ```
 
-That preflight path still uses LangGraph, PostgreSQL, Azure OpenAI, Coupang cart automation, and Telegram notifications, but it does not satisfy a real live candidate-fetch validation by itself.
+That fallback path still uses LangGraph, PostgreSQL, Azure OpenAI, Coupang cart automation, and Telegram notifications, but the primary live path no longer depends on a prepared product URL, product ID, or candidate fixture.
 
 Validated live browser path on March 11, 2026:
 
@@ -149,7 +151,8 @@ The live cart automation runs in attach mode only:
 2. The agent attaches to the already logged-in Chrome profile or another explicitly allowed session state.
 3. The agent does not fill the Coupang login form, handle OTP, or bypass security checks.
 4. If Coupang redirects to login, shows `Access Denied`, or presents a security challenge, the run stops immediately and records a blocker-classified cart result.
-5. The workflow stops after verified add-to-cart and must not continue into checkout or payment.
+5. If a product is sold out or the visible option state is ambiguous, the agent stops safely and records a classified failure instead of guessing.
+6. The workflow stops after verified add-to-cart and must not continue into checkout or payment.
 
 Recommended operator preflight:
 
@@ -226,11 +229,12 @@ Node order:
 
 1. `load_context`
 2. `agent_plan`
-3. `load_candidates`
-4. `select_products`
-5. `add_to_cart`
-6. `notify`
-7. `persist`
+3. `browser_shop`
+4. `load_candidates` fallback only
+5. `select_products` fallback only
+6. `add_to_cart` fallback only
+7. `notify`
+8. `persist`
 
 State is checkpointed through LangGraph's PostgreSQL checkpointer using `thread_id = envelope.session.session_id`.
 
@@ -242,7 +246,7 @@ Operational data is stored separately in PostgreSQL:
 - `recent_session_signals`
 - `current_cart_snapshot_items`
 
-That lets the workflow restore both prior purchase history and current-thread session signals on subsequent runs.
+`workflow_runs` now stores the agent plan, reasoning summary, last observation snapshot, and step trace alongside cart results. That lets the workflow restore both prior purchase history and current-thread session signals on subsequent runs.
 
 ## Validation
 
@@ -255,7 +259,7 @@ uv run python -m unittest discover -s tests
 Focused live-workflow tests:
 
 ```bash
-uv run python -m unittest tests.test_live_workflow
+uv run python -m unittest tests.test_live_browser_agent tests.test_live_workflow
 ```
 
 Docker smoke:
@@ -271,7 +275,7 @@ Suggested live operator validation order:
 
 ```bash
 uv run python -m coupang_cart_agent check-config
-uv run python -m coupang_cart_agent integration-live-request "양파 1개 담아줘" --fixture-path tests/fixtures/coupang_search_onion_fixture.json
+uv run python -m coupang_cart_agent integration-live-request "양파 1개 담아줘"
 uv run python -m coupang_cart_agent integration-live-telegram-once --timeout 10
 uv run python -m coupang_cart_agent integration-live-telegram-worker --timeout 30 --sleep-seconds 1
 ```
@@ -283,7 +287,7 @@ Recorded live validation evidence on March 11, 2026:
   `POSTGRES_DSN=postgresql://postgres:postgres@localhost:5432/coupang_cart_agent COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Profile 1' uv run python -m coupang_cart_agent integration-live-telegram-worker --timeout 1 --sleep-seconds 0 --max-cycles 1 --intake-db-path .artifacts/how22_telegram_intake.sqlite3 --fixture-path tests/fixtures/coupang_search_onion_fixture.json --skip-error-response`
 - Worker restart restored offset `286968897` from `.artifacts/how22_telegram_intake.sqlite3` and resumed with no duplicate processing on a second `integration-live-telegram-worker` run.
 - Telegram success notification payload recorded `총 1종, 2개, 17,960원 장바구니 담기 완료`.
-- The remaining gap is a production candidate source for arbitrary live requests, tracked separately in `HOW-21`
+- Fresh AOAI browser-agent live validation is still required after login/session access is prepared for the current workspace.
 
 ## Notes
 
@@ -292,3 +296,4 @@ Recorded live validation evidence on March 11, 2026:
 - `cart-live-add` remains useful for isolated Coupang selector debugging.
 - `integration-demo` and `/smoke/demo` are safe local validation paths.
 - `integration-live-*` commands are the production-shaped integration paths.
+- `--fixture-path` and `COUPANG_SEARCH_ENDPOINT` are fallback/debug inputs, not the primary live search path anymore.

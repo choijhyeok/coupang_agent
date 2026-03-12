@@ -40,6 +40,7 @@ from .contracts import (
 )
 from .http_server import CoupangCartAgentHttpServer
 from .integration import CoupangCartAgentFlow
+from .live_browser_agent import AzureOpenAIBrowserAgent, CoupangLiveBrowserShoppingAgent
 from .live_workflow import CoupangCartAgentLiveWorkflow
 from .notifications import (
     RetryingNotificationService,
@@ -76,9 +77,12 @@ def _build_live_candidate_source(*, config, fixture_path: str | None):
         from .candidate_sources import LiveCoupangSearchCandidateSource
 
         return LiveCoupangSearchCandidateSource(search_endpoint=config.coupang_search_endpoint)
-    raise ConfigError(
-        "Missing live candidate source configuration. Set COUPANG_SEARCH_ENDPOINT or pass --fixture-path."
-    )
+    def _fallback_only_candidate_source(request: ShoppingRequest):
+        raise RuntimeError(
+            "Fallback candidate source is unavailable. Configure COUPANG_SEARCH_ENDPOINT or pass --fixture-path."
+        )
+
+    return _fallback_only_candidate_source
 
 
 def _build_synthetic_live_envelope(request: ShoppingRequest) -> ShoppingRequestEnvelope:
@@ -123,6 +127,15 @@ def _open_live_workflow(
         credentials=None,
         result_store=SqliteCartResultStore(config.cart_db_path),
     )
+    shopping_agent = CoupangLiveBrowserShoppingAgent(
+        driver=page,
+        model=AzureOpenAIBrowserAgent(
+            endpoint=config.azure_openai_endpoint,
+            api_key=config.azure_openai_api_key,
+            deployment=config.azure_openai_deployment,
+            api_version=config.azure_openai_api_version,
+        ),
+    )
     with PostgresSaver.from_conn_string(config.postgres_dsn) as checkpointer:
         checkpointer.setup()
         workflow = CoupangCartAgentLiveWorkflow(
@@ -136,6 +149,7 @@ def _open_live_workflow(
                 deployment=config.azure_openai_deployment,
                 api_version=config.azure_openai_api_version,
             ),
+            shopping_agent=shopping_agent,
             checkpointer=checkpointer,
         )
         try:
