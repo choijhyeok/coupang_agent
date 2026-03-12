@@ -50,6 +50,8 @@
 - [x] Operator attach-session diagnostic command added
   - `uv run python -m coupang_cart_agent cart-live-inspect-session`
   - Result in current workspace: structured `LoginFailedError` when no reachable operator CDP endpoint is present
+  - `COUPANG_BROWSER_LAUNCH_MODE=browser_use COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Profile 1' uv run python -m coupang_cart_agent cart-live-inspect-session`
+  - Result: attached copied-profile session reaches `https://cart.coupang.com/cartView.pang` but still shows `로그인하기`; classified `LoginRequiredError`
 - [ ] Telegram request -> agent -> Coupang cart -> Telegram reply evidence 1건
 - [x] Branch / commit / publish status recorded
   - Branch: `wowogur12/how-24-coupang-aoai-live-web-shopping-agent-for-real-time-search`
@@ -77,6 +79,9 @@
 - Cookie metadata check on local `Profile 1`:
   - `sqlite3 "$HOME/Library/Application Support/Google/Chrome/Profile 1/Cookies" "select host_key, name, length(encrypted_value) from cookies where host_key like '%coupang%' order by host_key, name limit 50;"`
   - Result: Coupang-related cookies such as `.coupang.com|sid`, `.coupang.com|web-session-id`, and `.coupang.com|member_srl` are present in the profile DB, so the current blocker is not “no Coupang cookies at all” but “the attached browser session still fails Coupang auth/session checks for cart actions”.
+- Copied-profile session-preservation attempt:
+  - Changed copied profile preparation to keep `Sessions` and `Session Storage` instead of excluding them.
+  - Fresh validation still produced cart-page `로그인하기` / `login_required`, so preserving those directories alone was not sufficient to restore an authenticated Coupang cart session in this workspace.
 - GitHub auth instability was observed mid-run (`gh auth status` reported invalid keychain tokens and one `git push` returned HTTP 403), but the latest retry succeeded and branch HEAD is now published.
 - `docker compose up -d postgres` could not be used because port `5432` was already allocated by another local Docker process; the existing local Postgres instance at `postgresql://postgres:postgres@localhost:5432/coupang_cart_agent` was reachable and used for validation instead.
 

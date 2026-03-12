@@ -362,6 +362,13 @@ class PlaywrightCoupangCartPage:
             self._page = self._context.new_page()
         return self._page
 
+    def _pick_attached_page(self, context: BrowserContext) -> Page:
+        for page in reversed(context.pages):
+            url = (page.url or "").lower()
+            if url and not url.startswith(("chrome://", "devtools://", "chrome-extension://")):
+                return page
+        return context.pages[0] if context.pages else context.new_page()
+
     def _context_object(self) -> BrowserContext:
         self._page_object()
         assert self._context is not None
@@ -783,7 +790,7 @@ class ChromeCdpCoupangCartPage(PlaywrightCoupangCartPage):
             self._browser = self._connect_browser_with_retry()
             self._context = self._browser.contexts[0]
             self._context.set_default_timeout(self._settings.navigation_timeout_ms)
-            self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
+            self._page = self._pick_attached_page(self._context)
         return self._page
 
     def _prepare_copied_profile(self) -> None:
@@ -799,8 +806,6 @@ class ChromeCdpCoupangCartPage(PlaywrightCoupangCartPage):
             profile_dest,
             dirs_exist_ok=True,
             ignore=shutil.ignore_patterns(
-                "Sessions",
-                "Session Storage",
                 "Singleton*",
                 "Lockfile",
                 "*.lock",
@@ -857,7 +862,7 @@ class ExistingChromeCdpCoupangCartPage(PlaywrightCoupangCartPage):
             else:
                 self._context = self._browser.new_context()
             self._context.set_default_timeout(self._settings.navigation_timeout_ms)
-            self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
+            self._page = self._pick_attached_page(self._context)
         return self._page
 
     def _connect_browser_with_retry(self) -> Browser:
