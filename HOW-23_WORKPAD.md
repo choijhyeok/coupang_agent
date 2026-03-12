@@ -38,7 +38,11 @@
 - [x] Live attach-mode evidence or explicit blocker evidence
   - `COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Profile 1' uv run python -m coupang_cart_agent cart-live-add --product-url 'https://www.coupang.com/vp/products/8049869159' --product-id '8049869159' --name '국내산 햇 양파, 5kg, 1개' --price-krw 13610 --rating 4.6 --review-count 146522 --vendor '탐사'`
   - Result: structured blocker with `failure_reason=login_required`, `stage=session`, `launch_mode=browser_use`, `chrome_profile_directory=Profile 1`, `attach_mode_requires_operator_login=true`
-- [ ] Branch / commit / publish status recorded
+- [x] Branch / commit / publish status recorded
+  - Branch: `wowogur12/how-23-coupang-attach-mode`
+  - Commit: `177cde4657ecfbf611b833814a66cc9d057d7eac`
+  - Push: `git push -u origin wowogur12/how-23-coupang-attach-mode`
+  - PR: `https://github.com/choijhyeok/coupang_agent/pull/14`
 
 ### Notes / Blockers
 
