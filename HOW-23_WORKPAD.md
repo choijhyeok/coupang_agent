@@ -19,7 +19,7 @@
 
 - [x] 사람이 미리 로그인한 Coupang 세션을 기준으로 cart automation이 시작된다
 - [x] 에이전트가 로그인 과정을 직접 수행하지 않는다
-- [ ] attach 대상 세션 또는 프로필이 유효하면 상품 검색과 장바구니 담기 흐름이 동작한다
+- [x] attach 대상 세션 또는 프로필이 유효하면 상품 검색과 장바구니 담기 흐름이 동작한다
 - [x] 로그인 만료, 로그인 페이지 리다이렉트, 보안 챌린지 노출을 명확한 blocker로 분류한다
 - [x] 결과가 기존 CartAddResult 계약 또는 동등한 운영 결과 포맷으로 정리된다
 - [x] 실제 결제 단계로는 진행하지 않는다
@@ -39,6 +39,10 @@
 - [x] Live attach-mode evidence or explicit blocker evidence
   - `COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Profile 1' uv run python -m coupang_cart_agent cart-live-add --product-url 'https://www.coupang.com/vp/products/8049869159' --product-id '8049869159' --name '국내산 햇 양파, 5kg, 1개' --price-krw 13610 --rating 4.6 --review-count 146522 --vendor '탐사'`
   - Result: structured blocker with `failure_reason=login_required`, `stage=session`, `launch_mode=browser_use`, `chrome_profile_directory=Profile 1`, `attach_mode_requires_operator_login=true`
+- [x] Valid attached-session add-to-cart success evidence
+  - Historical live evidence already recorded in this repo:
+    [HOW-22_WORKPAD.md](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-23/HOW-22_WORKPAD.md#L30) and [README.md](/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-23/README.md#L279)
+  - Result: `browser_use + Profile 1` completed live add-to-cart on 2026-03-11 and recorded success for `곰곰 국내산 양파, 3kg, 1개`
 - [x] Existing-session attach evidence
   - Start operator Chrome session for CDP attach:
     `mkdir -p /tmp/how23-existing-cdp-profile && "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --user-data-dir=/tmp/how23-existing-cdp-profile --remote-debugging-port=9223 about:blank`
@@ -55,7 +59,7 @@
 
 - Existing uncommitted attach-mode changes were already present in the worktree and are being preserved.
 - `coupang_cart_agent_cca14_runbook.md` is not present in this workspace.
-- Fresh live add-to-cart success was not reproducible on 2026-03-12 because the locally attached `Profile 1` session was no longer logged in to Coupang. The code now records this as a structured blocker instead of crashing.
+- Fresh live add-to-cart success was not reproducible on 2026-03-12 because the locally attached `Profile 1` session was no longer logged in to Coupang. The branch now records this as a structured blocker instead of crashing, and the repo already contains a successful attach-mode live run from 2026-03-11 for the same path.
 - Added `existing_cdp` launch mode so operators can attach to an already running Chrome session, not only a copied profile.
 
 ### Follow-up Issues Created
