@@ -47,11 +47,17 @@
 - [x] Fresh live login/session blocker evidence 1건
   - `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=existing_cdp COUPANG_CHROME_REMOTE_DEBUGGING_PORT=9223 uv run python -m coupang_cart_agent integration-live-request '양파 1개 담아줘' --user-id telegram:8201584878 --chat-id 8201584878`
   - Result: structured failure with `failed_stage=session`, `failure_reason=login_required`, and Telegram failure notification delivered to chat `8201584878`
+- [x] Operator attach-session diagnostic command added
+  - `uv run python -m coupang_cart_agent cart-live-inspect-session`
+  - Result in current workspace: structured `LoginFailedError` when no reachable operator CDP endpoint is present
 - [ ] Telegram request -> agent -> Coupang cart -> Telegram reply evidence 1건
 - [x] Branch / commit / publish status recorded
   - Branch: `wowogur12/how-24-coupang-aoai-live-web-shopping-agent-for-real-time-search`
-  - Commit: `7f8ebb7`
-  - Push: `git push -u origin wowogur12/how-24-coupang-aoai-live-web-shopping-agent-for-real-time-search`
+  - Published commit: `67b332d`
+  - Unpublished local commit: `87f4731`
+  - Push status:
+    - Success earlier: `git push -u origin wowogur12/how-24-coupang-aoai-live-web-shopping-agent-for-real-time-search`
+    - Failed later: `git push`
   - PR: `https://github.com/choijhyeok/coupang_agent/pull/15`
 
 ### Notes / Blockers
@@ -68,6 +74,10 @@
 - Direct launch attempt with the real local profile:
   - `"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --user-data-dir="$HOME/Library/Application Support/Google/Chrome" --profile-directory='Profile 1' --remote-debugging-port=9224 --no-first-run --no-default-browser-check about:blank`
   - Result: Chrome process exited immediately, `http://127.0.0.1:9224` was never reachable, so this workspace could not produce a fresh authenticated `Profile 1` CDP session automatically.
+- Publish blocker:
+  - `git push` failed on 2026-03-12 with `remote: Permission to choijhyeok/coupang_agent.git denied to choijhyeok.` and `fatal: unable to access 'https://github.com/choijhyeok/coupang_agent.git/': The requested URL returned error: 403`
+  - `gh auth status` now reports the `choijhyeok` token in keychain is invalid.
+  - Human unblock needed: re-authenticate GitHub credentials for the `choijhyeok/coupang_agent` remote, then rerun `git push` from this branch so commit `87f4731` reaches PR `#15`.
 - `docker compose up -d postgres` could not be used because port `5432` was already allocated by another local Docker process; the existing local Postgres instance at `postgresql://postgres:postgres@localhost:5432/coupang_cart_agent` was reachable and used for validation instead.
 
 ### Follow-up Issues Created

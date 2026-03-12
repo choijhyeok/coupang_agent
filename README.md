@@ -158,6 +158,7 @@ Recommended operator preflight:
 
 ```bash
 uv run python -m coupang_cart_agent check-config
+uv run python -m coupang_cart_agent cart-live-inspect-session
 uv run python -m coupang_cart_agent cart-live-add \
   --headed \
   --product-url "https://www.coupang.com/vp/products/..." \
@@ -217,6 +218,7 @@ uv run python -m coupang_cart_agent parse-telegram-message "콜라 제로 2개 �
 uv run python -m coupang_cart_agent poll-telegram-once --timeout 1
 uv run python -m coupang_cart_agent capture-telegram-live-request --timeout 30 --max-attempts 10
 uv run python -m coupang_cart_agent integration-live-telegram-worker --timeout 30 --sleep-seconds 1
+uv run python -m coupang_cart_agent cart-live-inspect-session
 uv run python -m coupang_cart_agent cart-live-add --headed --product-url "https://www.coupang.com/vp/products/..." --product-id "..." --name "..."
 uv run python -m coupang_cart_agent send-telegram-notification --chat-id <chat_id> --scenario success
 ```
@@ -293,6 +295,7 @@ Recorded live validation evidence on March 11, 2026:
 
 - The workflow stops at verified add-to-cart. It must not continue into checkout or payment.
 - `COUPANG_USERNAME` and `COUPANG_PASSWORD` are optional legacy fields and are not used by the attach-mode live path.
+- `cart-live-inspect-session` is the fastest operator command to confirm whether the attached browser is really logged in, blocked by Access Denied/security, or simply missing a reachable CDP endpoint.
 - `cart-live-add` remains useful for isolated Coupang selector debugging.
 - `integration-demo` and `/smoke/demo` are safe local validation paths.
 - `integration-live-*` commands are the production-shaped integration paths.

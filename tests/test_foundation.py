@@ -25,8 +25,10 @@ from coupang_cart_agent.cart_adapters import ExistingChromeCdpCoupangCartPage
 from coupang_cart_agent.cli import build_live_cart_page, main
 from coupang_cart_agent.config import ConfigError, load_config, load_telegram_bot_token
 from coupang_cart_agent.contracts import (
+    BrowserObservation,
     CartAddFailureReason,
     CartAddStage,
+    ObservedProduct,
     ProductCandidate,
     RequestedItem,
     SelectedProduct,
@@ -346,6 +348,39 @@ class FoundationTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(delivered, [("telegram-chat", "장바구니 담기에 실패했습니다.\n단계: cart_add\n원인: 품절")])
         self.assertIn('"chat_id": "telegram-chat"', stdout.getvalue())
+
+    def test_cli_cart_live_inspect_session_reports_observation(self) -> None:
+        class FakeInspectionPage:
+            def observe(self, *, step_index: int):
+                return BrowserObservation(
+                    step_index=step_index,
+                    url="https://cart.coupang.com/cartView.pang",
+                    title="쿠팡! | 장바구니",
+                    page_kind="session_blocked",
+                    body_text_excerpt="로그인을 하시면, 장바구니에 보관된 상품을 확인하실 수 있습니다.",
+                    interactive_elements=["a:로그인하기"],
+                    observed_products=[ObservedProduct(name="dummy")],
+                    available_options=[],
+                    add_to_cart_visible=False,
+                    blocker_hint="Attach mode requires an operator-prepared logged-in Coupang session.",
+                    cart_count=0,
+                )
+
+            def close(self) -> None:
+                return None
+
+        stdout = io.StringIO()
+        with (
+            patch("coupang_cart_agent.cli.load_config", return_value=load_config({"TELEGRAM_BOT_TOKEN": "test-token"})),
+            patch("coupang_cart_agent.cli.build_live_cart_page", return_value=FakeInspectionPage()),
+            redirect_stdout(stdout),
+        ):
+            exit_code = main(["cart-live-inspect-session"])
+
+        self.assertEqual(exit_code, 2)
+        rendered = stdout.getvalue()
+        self.assertIn('"page_kind": "session_blocked"', rendered)
+        self.assertIn('"blocker_hint": "Attach mode requires an operator-prepared logged-in Coupang session."', rendered)
 
     def test_contract_import_example(self) -> None:
         request = ShoppingRequest(
