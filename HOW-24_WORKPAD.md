@@ -34,7 +34,7 @@
   - Result: `Ran 5 tests ... OK`
 - [x] Full automated regression relevant to touched modules
   - `uv run python -m unittest discover -s tests`
-  - Result: `Ran 64 tests ... OK`
+  - Result: `Ran 65 tests ... OK`
 - [x] Bytecode / import sanity
   - `uv run python -m compileall coupang_cart_agent tests`
   - Result: completed successfully
@@ -53,11 +53,11 @@
 - [ ] Telegram request -> agent -> Coupang cart -> Telegram reply evidence 1건
 - [x] Branch / commit / publish status recorded
   - Branch: `wowogur12/how-24-coupang-aoai-live-web-shopping-agent-for-real-time-search`
-  - Published commit: `67b332d`
-  - Unpublished local commit: `87f4731`
+  - Published commit: `d8f06ca`
   - Push status:
     - Success earlier: `git push -u origin wowogur12/how-24-coupang-aoai-live-web-shopping-agent-for-real-time-search`
-    - Failed later: `git push`
+    - Temporary failure observed once on `git push` with HTTP 403
+    - Latest retry succeeded: `git push`
   - PR: `https://github.com/choijhyeok/coupang_agent/pull/15`
 
 ### Notes / Blockers
@@ -74,10 +74,7 @@
 - Direct launch attempt with the real local profile:
   - `"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --user-data-dir="$HOME/Library/Application Support/Google/Chrome" --profile-directory='Profile 1' --remote-debugging-port=9224 --no-first-run --no-default-browser-check about:blank`
   - Result: Chrome process exited immediately, `http://127.0.0.1:9224` was never reachable, so this workspace could not produce a fresh authenticated `Profile 1` CDP session automatically.
-- Publish blocker:
-  - `git push` failed on 2026-03-12 with `remote: Permission to choijhyeok/coupang_agent.git denied to choijhyeok.` and `fatal: unable to access 'https://github.com/choijhyeok/coupang_agent.git/': The requested URL returned error: 403`
-  - `gh auth status` now reports the `choijhyeok` token in keychain is invalid.
-  - Human unblock needed: re-authenticate GitHub credentials for the `choijhyeok/coupang_agent` remote, then rerun `git push` from this branch so commit `87f4731` reaches PR `#15`.
+- GitHub auth instability was observed mid-run (`gh auth status` reported invalid keychain tokens and one `git push` returned HTTP 403), but the latest retry succeeded and branch HEAD is now published.
 - `docker compose up -d postgres` could not be used because port `5432` was already allocated by another local Docker process; the existing local Postgres instance at `postgresql://postgres:postgres@localhost:5432/coupang_cart_agent` was reachable and used for validation instead.
 
 ### Follow-up Issues Created
