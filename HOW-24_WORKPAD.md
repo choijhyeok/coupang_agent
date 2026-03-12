@@ -45,7 +45,11 @@
 - [x] Option ambiguity or out-of-stock safe failure evidence 1건
   - Automated evidence: `tests.test_live_browser_agent.LiveBrowserAgentTests.test_agent_stops_on_option_ambiguity`
 - [ ] Telegram request -> agent -> Coupang cart -> Telegram reply evidence 1건
-- [ ] Branch / commit / publish status recorded
+- [x] Branch / commit / publish status recorded
+  - Branch: `wowogur12/how-24-coupang-aoai-live-web-shopping-agent-for-real-time-search`
+  - Commit: `2df30de`
+  - Push: `git push -u origin wowogur12/how-24-coupang-aoai-live-web-shopping-agent-for-real-time-search`
+  - PR: `https://github.com/choijhyeok/coupang_agent/pull/15`
 
 ### Notes / Blockers
 
