@@ -65,6 +65,9 @@
   - CDP endpoint `http://127.0.0.1:9223/json/version` was reachable.
   - Attached page showed `https://cart.coupang.com/cartView.pang` but the body contained `로그인하기`, so the current operator session was not actually authenticated for cart actions.
   - Tightened workflow classification so this state records `session/login_required` instead of a generic `browser_agent` failure.
+- Direct launch attempt with the real local profile:
+  - `"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --user-data-dir="$HOME/Library/Application Support/Google/Chrome" --profile-directory='Profile 1' --remote-debugging-port=9224 --no-first-run --no-default-browser-check about:blank`
+  - Result: Chrome process exited immediately, `http://127.0.0.1:9224` was never reachable, so this workspace could not produce a fresh authenticated `Profile 1` CDP session automatically.
 - `docker compose up -d postgres` could not be used because port `5432` was already allocated by another local Docker process; the existing local Postgres instance at `postgresql://postgres:postgres@localhost:5432/coupang_cart_agent` was reachable and used for validation instead.
 
 ### Follow-up Issues Created
