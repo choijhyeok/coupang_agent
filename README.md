@@ -104,8 +104,6 @@ cp .env.example .env
 Required for the live workflow:
 
 - `TELEGRAM_BOT_TOKEN`
-- `COUPANG_USERNAME`
-- `COUPANG_PASSWORD`
 - `AZURE_OPENAI_ENDPOINT`
 - `AZURE_OPENAI_API_KEY`
 - `AZURE_OPENAI_DEPLOYMENT`
@@ -136,6 +134,30 @@ COUPANG_CHROME_PROFILE_DIRECTORY="Profile 1"
 The `browser_use` mode is the preferred live path in this repository. It uses a copied real Chrome profile over CDP so the worker runs with an operator-approved session instead of a fresh Playwright context.
 
 `Default` returned `Access Denied` in this workspace. `Profile 1` restored the authenticated Coupang session and completed add-to-cart successfully. Keep `playwright` only as a debugging fallback for selector work, not as the primary live path.
+
+### Attach Mode Operating Rules
+
+The live cart automation runs in attach mode only:
+
+1. A human operator must open Chrome and complete Coupang login manually before starting the agent.
+2. The agent attaches to the already logged-in Chrome profile or another explicitly allowed session state.
+3. The agent does not fill the Coupang login form, handle OTP, or bypass security checks.
+4. If Coupang redirects to login, shows `Access Denied`, or presents a security challenge, the run stops immediately and records a blocker-classified cart result.
+5. The workflow stops after verified add-to-cart and must not continue into checkout or payment.
+
+Recommended operator preflight:
+
+```bash
+uv run python -m coupang_cart_agent check-config
+uv run python -m coupang_cart_agent cart-live-add \
+  --headed \
+  --product-url "https://www.coupang.com/vp/products/..." \
+  --product-id "..." \
+  --name "..." \
+  --quantity 1
+```
+
+`cart-live-add` prints `attach_mode_requires_operator_login: true` and the active Chrome profile directory so operators can confirm the run started from an already prepared session.
 
 ## Docker Compose
 
@@ -246,6 +268,7 @@ Recorded live validation evidence on March 11, 2026:
 ## Notes
 
 - The workflow stops at verified add-to-cart. It must not continue into checkout or payment.
+- `COUPANG_USERNAME` and `COUPANG_PASSWORD` are optional legacy fields and are not used by the attach-mode live path.
 - `cart-live-add` remains useful for isolated Coupang selector debugging.
 - `integration-demo` and `/smoke/demo` are safe local validation paths.
 - `integration-live-*` commands are the production-shaped integration paths.

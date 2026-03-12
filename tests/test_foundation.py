@@ -10,11 +10,14 @@ from unittest.mock import patch
 
 from coupang_cart_agent.cart_persistence import SqliteCartResultStore
 from coupang_cart_agent.cart_executor import (
+    AccessDeniedError,
     CartSnapshot,
     CoupangCartExecutor,
     LoginFailedError,
+    LoginRequiredError,
     OptionMismatchError,
     OutOfStockError,
+    SecurityChallengeError,
     SessionCredentials,
     UIElementNotFoundError,
 )
@@ -46,8 +49,8 @@ class FoundationTests(unittest.TestCase):
             load_config({})
 
         self.assertIn("TELEGRAM_BOT_TOKEN", str(context.exception))
-        self.assertIn("COUPANG_USERNAME", str(context.exception))
-        self.assertIn("COUPANG_PASSWORD", str(context.exception))
+        self.assertNotIn("COUPANG_USERNAME", str(context.exception))
+        self.assertNotIn("COUPANG_PASSWORD", str(context.exception))
 
     def test_load_config_reads_dotenv_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -143,6 +146,20 @@ class FoundationTests(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         self.assertEqual(stdout.getvalue(), "")
         self.assertIn("Missing required configuration", stderr.getvalue())
+
+    def test_cli_check_config_reports_attach_mode_flags_without_coupang_credentials(self) -> None:
+        stdout = io.StringIO()
+        with (
+            patch("coupang_cart_agent.cli.load_config", return_value=load_config({"TELEGRAM_BOT_TOKEN": "test-token"})),
+            redirect_stdout(stdout),
+        ):
+            exit_code = main(["check-config"])
+
+        self.assertEqual(exit_code, 0)
+        payload = stdout.getvalue()
+        self.assertIn('"coupang_username_set": false', payload)
+        self.assertIn('"coupang_password_set": false', payload)
+        self.assertIn('"coupang_attach_mode_requires_operator_login": true', payload)
 
     def test_cli_poll_telegram_once_reports_missing_bot_token_only(self) -> None:
         stdout = io.StringIO()
@@ -318,7 +335,7 @@ class FakeCoupangPage:
     def __init__(
         self,
         *,
-        session_mode: str = "existing_session",
+        session_mode: str = "attached_browser_session",
         before_count: int = 1,
         after_count: int = 2,
         add_to_cart_id: str = "cart-item-42",
@@ -333,33 +350,57 @@ class FakeCoupangPage:
         self.failure = failure
         self.calls: list[str] = []
 
-    def ensure_session(self, credentials: SessionCredentials) -> str:
-        self.calls.append("ensure_session")
-        self._raise_if(LoginFailedError)
+    def attach_to_logged_in_session(self, credentials: SessionCredentials | None = None) -> str:
+        self.calls.append("attach_to_logged_in_session")
+        self._raise_if(LoginRequiredError, stage="attach_to_logged_in_session")
+        self._raise_if(AccessDeniedError, stage="attach_to_logged_in_session")
+        self._raise_if(SecurityChallengeError, stage="attach_to_logged_in_session")
+        self._raise_if(LoginFailedError, stage="attach_to_logged_in_session")
         return self.session_mode
+
+    def assert_logged_in(self) -> None:
+        self.calls.append("assert_logged_in")
+        self._raise_if(LoginRequiredError, stage="assert_logged_in")
+        self._raise_if(AccessDeniedError, stage="assert_logged_in")
+        self._raise_if(SecurityChallengeError, stage="assert_logged_in")
 
     def open_product(self, product_url: str) -> None:
         self.calls.append(f"open_product:{product_url}")
+        self._raise_if(LoginRequiredError, stage="open_product")
+        self._raise_if(AccessDeniedError, stage="open_product")
+        self._raise_if(SecurityChallengeError, stage="open_product")
         self._raise_if(UIElementNotFoundError, stage="open_product")
 
     def assert_in_stock(self) -> None:
         self.calls.append("assert_in_stock")
+        self._raise_if(LoginRequiredError, stage="assert_in_stock")
+        self._raise_if(AccessDeniedError, stage="assert_in_stock")
+        self._raise_if(SecurityChallengeError, stage="assert_in_stock")
         self._raise_if(OutOfStockError)
 
     def select_options(self, selection: SelectedProduct) -> dict[str, str]:
         self.calls.append("select_options")
+        self._raise_if(LoginRequiredError, stage="select_options")
+        self._raise_if(AccessDeniedError, stage="select_options")
+        self._raise_if(SecurityChallengeError, stage="select_options")
         self._raise_if(OptionMismatchError)
         self._raise_if(UIElementNotFoundError, stage="select_options")
         return {"size": "355ml", "pack": "24"}
 
     def cart_snapshot(self) -> CartSnapshot:
         self.calls.append("cart_snapshot")
+        self._raise_if(LoginRequiredError, stage="cart_snapshot")
+        self._raise_if(AccessDeniedError, stage="cart_snapshot")
+        self._raise_if(SecurityChallengeError, stage="cart_snapshot")
         if self.calls.count("cart_snapshot") == 1:
             return CartSnapshot(item_count=self.before_count, summary="before")
         return CartSnapshot(item_count=self.after_count, summary="after")
 
     def add_to_cart(self) -> str:
         self.calls.append("add_to_cart")
+        self._raise_if(LoginRequiredError, stage="add_to_cart")
+        self._raise_if(AccessDeniedError, stage="add_to_cart")
+        self._raise_if(SecurityChallengeError, stage="add_to_cart")
         self._raise_if(UIElementNotFoundError, stage="add_to_cart")
         return self.add_to_cart_id
 
@@ -416,14 +457,15 @@ class CartExecutorTests(unittest.TestCase):
             self.assertEqual(result.cart_count_before, 3)
             self.assertEqual(result.cart_count_after, 4)
             self.assertFalse(result.checkout_attempted)
-            self.assertEqual(result.evidence["session_mode"], "existing_session")
+            self.assertEqual(result.evidence["session_mode"], "attached_browser_session")
             self.assertEqual(len(persisted), 1)
             self.assertEqual(persisted[0]["stage"], "add_to_cart")
             self.assertTrue(persisted[0]["success"])
             self.assertEqual(
                 page.calls,
                 [
-                    "ensure_session",
+                    "attach_to_logged_in_session",
+                    "assert_logged_in",
                     f"open_product:{self.selection.candidate.product_url}",
                     "assert_in_stock",
                     "select_options",
@@ -437,7 +479,31 @@ class CartExecutorTests(unittest.TestCase):
     def test_add_products_classifies_failures(self) -> None:
         scenarios = [
             (
-                "login",
+                "login_required",
+                LoginRequiredError("Attach mode reached the Coupang login page."),
+                CartAddFailureReason.LOGIN_REQUIRED,
+                CartAddStage.SESSION,
+            ),
+            (
+                "login_required_during_add_to_cart",
+                LoginRequiredError("Attach mode reached the Coupang login page."),
+                CartAddFailureReason.LOGIN_REQUIRED,
+                CartAddStage.ADD_TO_CART,
+            ),
+            (
+                "access_denied",
+                AccessDeniedError("Attach mode was blocked by Coupang Access Denied."),
+                CartAddFailureReason.ACCESS_DENIED,
+                CartAddStage.SESSION,
+            ),
+            (
+                "security_challenge",
+                SecurityChallengeError("Attach mode encountered a Coupang security challenge."),
+                CartAddFailureReason.SECURITY_CHALLENGE,
+                CartAddStage.SESSION,
+            ),
+            (
+                "login_failed",
                 LoginFailedError("Login failed for configured Coupang account."),
                 CartAddFailureReason.LOGIN_FAILED,
                 CartAddStage.SESSION,
@@ -464,6 +530,8 @@ class CartExecutorTests(unittest.TestCase):
         for name, failure, expected_reason, expected_stage in scenarios:
             with self.subTest(name=name):
                 page = FakeCoupangPage(failure=failure)
+                if name == "login_required_during_add_to_cart":
+                    failure.stage = "add_to_cart"
                 executor = CoupangCartExecutor(page=page, credentials=self.credentials)
 
                 result = executor.add_products([self.selection])[0]
@@ -486,6 +554,16 @@ class CartExecutorTests(unittest.TestCase):
         self.assertNotIn(self.credentials.username, joined)
         self.assertNotIn(self.credentials.password, joined)
         self.assertIn("***", joined)
+
+    def test_executor_handles_missing_credentials_in_attach_mode(self) -> None:
+        page = FakeCoupangPage(failure=LoginRequiredError("Attach mode requires an operator-prepared logged-in Coupang session."))
+        executor = CoupangCartExecutor(page=page, credentials=None)
+
+        result = executor.add_products([self.selection])[0]
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.failure_reason, CartAddFailureReason.LOGIN_REQUIRED)
+        self.assertEqual(result.stage, CartAddStage.SESSION)
 
     def test_executor_stops_when_checkout_starts(self) -> None:
         page = FakeCoupangPage(checkout_started=True)

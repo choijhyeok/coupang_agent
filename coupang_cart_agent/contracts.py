@@ -18,6 +18,9 @@ class CartAddFailureReason(StrEnum):
     """Classified failure reasons required by the cart automation module."""
 
     LOGIN_FAILED = "login_failed"
+    LOGIN_REQUIRED = "login_required"
+    SECURITY_CHALLENGE = "security_challenge"
+    ACCESS_DENIED = "access_denied"
     OUT_OF_STOCK = "out_of_stock"
     OPTION_MISMATCH = "option_mismatch"
     UI_ELEMENT_NOT_FOUND = "ui_element_not_found"
@@ -209,7 +212,7 @@ def demo_contract_payload() -> dict[str, object]:
         cart_count_before=1,
         cart_count_after=2,
         evidence={
-            "session_mode": "existing_session",
+            "session_mode": "attached_browser_session",
             "product_url": candidate.product_url,
         },
     )

@@ -119,10 +119,7 @@ def _open_live_workflow(
     page = build_live_cart_page(config)
     cart_service = CoupangCartExecutor(
         page=page,
-        credentials=SessionCredentials(
-            username=config.coupang_username,
-            password=config.coupang_password,
-        ),
+        credentials=None,
         result_store=SqliteCartResultStore(config.cart_db_path),
     )
     with PostgresSaver.from_conn_string(config.postgres_dsn) as checkpointer:
@@ -203,7 +200,8 @@ def main(argv: list[str] | None = None) -> int:
             json.dumps(
                 {
                     "telegram_bot_token_set": bool(config.telegram_bot_token),
-                    "coupang_username": config.coupang_username,
+                    "coupang_username_set": bool(config.coupang_username),
+                    "coupang_password_set": bool(config.coupang_password),
                     "coupang_login_url": config.coupang_login_url,
                     "coupang_cart_url": config.coupang_cart_url,
                     "coupang_browser_headless": config.coupang_browser_headless,
@@ -212,6 +210,7 @@ def main(argv: list[str] | None = None) -> int:
                     "coupang_chrome_profile_directory": config.coupang_chrome_profile_directory,
                     "coupang_chrome_remote_debugging_port": config.coupang_chrome_remote_debugging_port,
                     "coupang_storage_state_path": config.coupang_storage_state_path,
+                    "coupang_attach_mode_requires_operator_login": True,
                     "cart_db_path": config.cart_db_path,
                     "default_currency": config.default_currency,
                     "azure_openai_endpoint": config.azure_openai_endpoint,
@@ -422,10 +421,7 @@ def main(argv: list[str] | None = None) -> int:
             selection_service=HeuristicProductSelectionService(),
             cart_service=CoupangCartExecutor(
                 page=DemoCoupangCartPage(should_fail=parsed.scenario == "cart-failure"),
-                credentials=SessionCredentials(
-                    username="demo-user",
-                    password="demo-password",
-                ),
+                credentials=SessionCredentials(),
             ),
             notification_service=RetryingNotificationService(sender=sender, max_attempts=1),
         )
@@ -500,10 +496,7 @@ def main(argv: list[str] | None = None) -> int:
         page = build_live_cart_page(runtime_config)
         executor = CoupangCartExecutor(
             page=page,
-            credentials=SessionCredentials(
-                username=config.coupang_username,
-                password=config.coupang_password,
-            ),
+            credentials=None,
             result_store=SqliteCartResultStore(parsed.db_path or config.cart_db_path),
         )
 
@@ -519,6 +512,8 @@ def main(argv: list[str] | None = None) -> int:
                     "audit_log": [asdict(entry) for entry in executor.audit_log()],
                     "db_path": parsed.db_path or config.cart_db_path,
                     "launch_mode": config.coupang_browser_launch_mode,
+                    "chrome_profile_directory": config.coupang_chrome_profile_directory,
+                    "attach_mode_requires_operator_login": True,
                 },
                 ensure_ascii=False,
                 indent=2,
