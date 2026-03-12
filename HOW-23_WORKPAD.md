@@ -40,8 +40,8 @@
   - Result: structured blocker with `failure_reason=login_required`, `stage=session`, `launch_mode=browser_use`, `chrome_profile_directory=Profile 1`, `attach_mode_requires_operator_login=true`
 - [x] Branch / commit / publish status recorded
   - Branch: `wowogur12/how-23-coupang-attach-mode`
-  - Commit: `177cde4657ecfbf611b833814a66cc9d057d7eac`
-  - Push: `git push -u origin wowogur12/how-23-coupang-attach-mode`
+  - Commit SHA is recorded in the Linear issue workpad comment for the latest published HEAD.
+  - Push: `git push origin wowogur12/how-23-coupang-attach-mode`
   - PR: `https://github.com/choijhyeok/coupang_agent/pull/14`
 
 ### Notes / Blockers
