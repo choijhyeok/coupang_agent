@@ -232,6 +232,105 @@ class LiveBrowserAgentTests(unittest.TestCase):
         self.assertEqual(result.cart_results[0].failure_reason, CartAddFailureReason.AMBIGUITY)
         self.assertEqual(result.cart_results[0].stage.value, "option_selection")
 
+    def test_agent_prefers_in_stock_search_result_when_sold_out_result_scores_higher(self) -> None:
+        driver = SequencedBrowserDriver(
+            [
+                BrowserObservation(
+                    step_index=1,
+                    url="https://www.coupang.com/np/search?q=%EC%83%9D%EC%88%98",
+                    title="검색 결과",
+                    page_kind="search_results",
+                    body_text_excerpt="생수 추천",
+                    interactive_elements=["link:품절 프리미엄 생수", "link:재고 있음 생수"],
+                    observed_products=[
+                        ObservedProduct(
+                            name="품절 프리미엄 생수",
+                            href="https://www.coupang.com/vp/products/WATER-SOLD-OUT",
+                            price_text="12,900원",
+                            rating_text="4.9",
+                            review_count_text="8,200",
+                            sold_out=True,
+                        ),
+                        ObservedProduct(
+                            name="재고 있음 생수",
+                            href="https://www.coupang.com/vp/products/WATER-IN-STOCK",
+                            price_text="13,900원",
+                            rating_text="4.8",
+                            review_count_text="7,900",
+                        ),
+                    ],
+                ),
+                BrowserObservation(
+                    step_index=2,
+                    url="https://www.coupang.com/vp/products/WATER-IN-STOCK",
+                    title="상품 상세",
+                    page_kind="product_page",
+                    body_text_excerpt="장바구니 담기",
+                    interactive_elements=["button:장바구니 담기"],
+                    selected_product_hint={
+                        "name": "재고 있음 생수",
+                        "href": "https://www.coupang.com/vp/products/WATER-IN-STOCK",
+                        "price_text": "13,900원",
+                        "rating_text": "4.8",
+                        "review_count_text": "7,900",
+                    },
+                    add_to_cart_visible=True,
+                ),
+            ]
+        )
+        agent = CoupangLiveBrowserShoppingAgent(
+            driver=driver,
+            model=DeterministicBrowserAgentModel(),
+        )
+
+        result = agent.run(
+            request=self._request(text="생수 1개 담아줘", item_name="생수"),
+            search_queries={"생수": "생수 쿠팡"},
+            operator_note="Avoid sold out products.",
+            selection_brief="Prefer items that can be added to cart immediately.",
+        )
+
+        self.assertEqual(driver.executed_actions, ["click", "add_to_cart"])
+        self.assertTrue(result.cart_results[0].success)
+        self.assertEqual(result.selections[0].candidate.product_id, "WATER-IN-STOCK")
+
+    def test_agent_classifies_selected_product_sold_out_hint_as_out_of_stock(self) -> None:
+        driver = SequencedBrowserDriver(
+            [
+                BrowserObservation(
+                    step_index=1,
+                    url="https://www.coupang.com/vp/products/SOLD-OUT-1",
+                    title="상품 상세",
+                    page_kind="product_page",
+                    body_text_excerpt="상품 상세 페이지",
+                    interactive_elements=["text:품절"],
+                    selected_product_hint={
+                        "name": "품절 상품",
+                        "href": "https://www.coupang.com/vp/products/SOLD-OUT-1",
+                        "price_text": "9,900원",
+                        "rating_text": "4.7",
+                        "review_count_text": "100",
+                        "sold_out": True,
+                    },
+                ),
+            ]
+        )
+        agent = CoupangLiveBrowserShoppingAgent(
+            driver=driver,
+            model=DeterministicBrowserAgentModel(),
+        )
+
+        result = agent.run(
+            request=self._request(text="품절 상품 1개 담아줘", item_name="품절 상품"),
+            search_queries={"품절 상품": "품절 상품 쿠팡"},
+            operator_note="Stop on sold-out detail pages.",
+            selection_brief="Classify sold-out detail pages safely.",
+        )
+
+        self.assertFalse(result.cart_results[0].success)
+        self.assertEqual(result.cart_results[0].failure_reason, CartAddFailureReason.OUT_OF_STOCK)
+        self.assertEqual(result.cart_results[0].stage.value, "product_page")
+
 
 class BrowserWorkflowIntegrationTests(unittest.TestCase):
     def _envelope(self) -> ShoppingRequestEnvelope:

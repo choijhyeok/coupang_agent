@@ -148,6 +148,12 @@ class DeterministicBrowserAgentModel:
                 blocker_reason=blocker_reason,
                 reasoning_summary=f"Blocked by page state: {observation.blocker_hint}",
             )
+        if _observation_indicates_out_of_stock(observation):
+            return BrowserAgentAction(
+                action_type=BrowserAgentActionType.STOP,
+                blocker_reason=CartAddFailureReason.OUT_OF_STOCK,
+                reasoning_summary="Current product state indicates the item is sold out.",
+            )
         if observation.available_options:
             matched = _match_option(context.item, observation.available_options)
             if matched is not None:
@@ -485,6 +491,8 @@ def _classify_observation(observation: BrowserObservation) -> CartAddFailureReas
         blocker_reason = _classify_blocker_hint(observation.blocker_hint)
         if blocker_reason is not None:
             return blocker_reason
+    if _observation_indicates_out_of_stock(observation):
+        return CartAddFailureReason.OUT_OF_STOCK
     lowered = observation.body_text_excerpt.lower()
     if any(token in lowered for token in ("품절", "일시품절", "재입고 알림")):
         return CartAddFailureReason.OUT_OF_STOCK
@@ -506,6 +514,17 @@ def _classify_blocker_hint(blocker_hint: str) -> CartAddFailureReason | None:
     if "품절" in blocker_hint:
         return CartAddFailureReason.OUT_OF_STOCK
     return None
+
+
+def _observation_indicates_out_of_stock(observation: BrowserObservation) -> bool:
+    if observation.selected_product_hint.get("sold_out"):
+        return True
+    if any(product.sold_out for product in observation.observed_products):
+        available_products = [product for product in observation.observed_products if not product.sold_out]
+        if not available_products:
+            return True
+    lowered = observation.body_text_excerpt.lower()
+    return any(token in lowered for token in ("품절", "일시품절", "재입고 알림"))
 
 
 def _stage_from_observation(observation: BrowserObservation) -> CartAddStage:
@@ -585,6 +604,7 @@ def _rank_observed_products(products: list[ObservedProduct]) -> list[ObservedPro
     return sorted(
         products,
         key=lambda product: (
+            0 if product.sold_out else 1,
             _rating_from_text(product.rating_text),
             _review_count_from_text(product.review_count_text),
             -_price_from_text(product.price_text),

@@ -2,7 +2,7 @@
 
 ### Environment
 
-- Date: 2026-03-12 KST
+- Date: 2026-03-16 KST
 - Branch: `wowogur12/how-24-coupang-aoai-live-web-shopping-agent-for-real-time-search`
 - Workspace: `/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-24`
 - Issue type: feature module + integration
@@ -31,10 +31,10 @@
 
 - [x] Focused automated tests
   - `uv run python -m unittest tests.test_live_browser_agent tests.test_live_workflow`
-  - Result: `Ran 5 tests ... OK`
+  - Result: `Ran 8 tests ... OK`
 - [x] Full automated regression relevant to touched modules
   - `uv run python -m unittest discover -s tests`
-  - Result: `Ran 65 tests ... OK`
+  - Result: `Ran 67 tests ... OK`
 - [x] Bytecode / import sanity
   - `uv run python -m compileall coupang_cart_agent tests`
   - Result: completed successfully
@@ -82,9 +82,16 @@
 - Copied-profile session-preservation attempt:
   - Changed copied profile preparation to keep `Sessions` and `Session Storage` instead of excluding them.
   - Fresh validation still produced cart-page `로그인하기` / `login_required`, so preserving those directories alone was not sufficient to restore an authenticated Coupang cart session in this workspace.
+- Additional hardening on 2026-03-16:
+  - The deterministic browser-agent fallback now treats `sold_out` observation hints as first-class blockers instead of drifting into `unknown` or re-search loops.
+  - Search-result ranking now de-prioritizes sold-out items so a highly rated but unavailable product is not clicked ahead of an in-stock alternative.
+- LangGraph checkpoint warning observed during automated tests:
+  - `Deserializing unregistered type coupang_cart_agent.contracts.CartAddStage from checkpoint`
+  - Current tests still pass, but this is now tracked as follow-up issue `HOW-25` because a future LangGraph release may block these restores.
 - GitHub auth instability was observed mid-run (`gh auth status` reported invalid keychain tokens and one `git push` returned HTTP 403), but the latest retry succeeded and branch HEAD is now published.
 - `docker compose up -d postgres` could not be used because port `5432` was already allocated by another local Docker process; the existing local Postgres instance at `postgresql://postgres:postgres@localhost:5432/coupang_cart_agent` was reachable and used for validation instead.
 
 ### Follow-up Issues Created
 
-- None
+- `HOW-25` Backlog: `[Coupang] Allowlist LangGraph checkpoint enum types for persisted live workflow state`
+  - Related to `HOW-24`
