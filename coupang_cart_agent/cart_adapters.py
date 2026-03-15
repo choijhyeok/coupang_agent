@@ -160,13 +160,22 @@ class PlaywrightCoupangCartPage:
             self._context.storage_state(path=self._settings.storage_state_path)
         if self._browser is not None:
             self._browser.close()
-        if self._playwright_cm is not None:
-            self._playwright_cm.__exit__(None, None, None)
+        self._close_playwright_context_manager()
         self._playwright_cm = None
         self._playwright = None
         self._browser = None
         self._context = None
         self._page = None
+
+    def _close_playwright_context_manager(self) -> None:
+        if self._playwright_cm is None:
+            return
+        try:
+            self._playwright_cm.__exit__(None, None, None)
+        except AttributeError:
+            # Playwright can leave the context manager partially initialized when
+            # sync usage fails before the connection object is created.
+            pass
 
     def attach_to_logged_in_session(self, credentials: SessionCredentials | None = None) -> str:
         page = self._page_object()
@@ -751,8 +760,7 @@ class ChromeCdpCoupangCartPage(PlaywrightCoupangCartPage):
         try:
             if self._browser is not None:
                 self._browser.close()
-            if self._playwright_cm is not None:
-                self._playwright_cm.__exit__(None, None, None)
+            self._close_playwright_context_manager()
         finally:
             if self._chrome_process is not None:
                 self._chrome_process.terminate()
@@ -844,8 +852,7 @@ class ExistingChromeCdpCoupangCartPage(PlaywrightCoupangCartPage):
     def close(self) -> None:
         if self._browser is not None:
             self._browser.close()
-        if self._playwright_cm is not None:
-            self._playwright_cm.__exit__(None, None, None)
+        self._close_playwright_context_manager()
         self._playwright_cm = None
         self._playwright = None
         self._browser = None

@@ -22,6 +22,7 @@ from coupang_cart_agent.cart_executor import (
     UIElementNotFoundError,
 )
 from coupang_cart_agent.cart_adapters import ExistingChromeCdpCoupangCartPage
+from coupang_cart_agent.cart_adapters import PlaywrightCoupangSettings
 from coupang_cart_agent.cli import build_live_cart_page, main
 from coupang_cart_agent.config import ConfigError, load_config, load_telegram_bot_token
 from coupang_cart_agent.contracts import (
@@ -381,6 +382,23 @@ class FoundationTests(unittest.TestCase):
         rendered = stdout.getvalue()
         self.assertIn('"page_kind": "session_blocked"', rendered)
         self.assertIn('"blocker_hint": "Attach mode requires an operator-prepared logged-in Coupang session."', rendered)
+
+    def test_existing_cdp_close_tolerates_partially_initialized_playwright_context(self) -> None:
+        page = ExistingChromeCdpCoupangCartPage(
+            settings=PlaywrightCoupangSettings(
+                login_url="https://login.coupang.com",
+                cart_url="https://cart.coupang.com/cartView.pang",
+            ),
+            remote_debugging_port=9223,
+        )
+
+        class BrokenPlaywrightContextManager:
+            def __exit__(self, exc_type, exc, tb):
+                raise AttributeError("'PlaywrightContextManager' object has no attribute '_connection'")
+
+        page._playwright_cm = BrokenPlaywrightContextManager()
+        page.close()
+        self.assertIsNone(page._playwright_cm)
 
     def test_contract_import_example(self) -> None:
         request = ShoppingRequest(
