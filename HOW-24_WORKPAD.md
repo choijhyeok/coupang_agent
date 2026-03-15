@@ -55,7 +55,7 @@
 - [ ] Telegram request -> agent -> Coupang cart -> Telegram reply evidence 1건
 - [x] Branch / commit / publish status recorded
   - Branch: `wowogur12/how-24-coupang-aoai-live-web-shopping-agent-for-real-time-search`
-  - Latest local commit: `930fe06`
+  - Latest local commit: `86397f8`
   - Last published remote commit before the auth regression: `d8f06ca`
   - Push status:
     - Success earlier: `git push -u origin wowogur12/how-24-coupang-aoai-live-web-shopping-agent-for-real-time-search`
@@ -92,7 +92,7 @@
   - `Deserializing unregistered type coupang_cart_agent.contracts.CartAddStage from checkpoint`
   - Current tests still pass, but this is now tracked as follow-up issue `HOW-25` because a future LangGraph release may block these restores.
 - GitHub publish blocker on 2026-03-16:
-  - `git push` for local HEAD `930fe06` failed with HTTP 403.
+  - `git push` for local HEAD `86397f8` failed with HTTP 403.
   - `gh auth status` reports the keyring token for `choijhyeok` is invalid, and the inactive stored accounts are also invalid.
   - Until credentials are refreshed, the latest sold-out handling hardening is committed locally but not published to `origin`.
 - `docker compose up -d postgres` could not be used because port `5432` was already allocated by another local Docker process; the existing local Postgres instance at `postgresql://postgres:postgres@localhost:5432/coupang_cart_agent` was reachable and used for validation instead.
