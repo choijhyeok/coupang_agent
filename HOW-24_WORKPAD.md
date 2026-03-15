@@ -55,11 +55,14 @@
 - [ ] Telegram request -> agent -> Coupang cart -> Telegram reply evidence 1건
 - [x] Branch / commit / publish status recorded
   - Branch: `wowogur12/how-24-coupang-aoai-live-web-shopping-agent-for-real-time-search`
-  - Published commit: `d8f06ca`
+  - Latest local commit: `930fe06`
+  - Last published remote commit before the auth regression: `d8f06ca`
   - Push status:
     - Success earlier: `git push -u origin wowogur12/how-24-coupang-aoai-live-web-shopping-agent-for-real-time-search`
-    - Temporary failure observed once on `git push` with HTTP 403
-    - Latest retry succeeded: `git push`
+    - Latest attempt failed on 2026-03-16:
+      - Command: `git push`
+      - Result: `remote: Permission to choijhyeok/coupang_agent.git denied to choijhyeok. fatal: unable to access 'https://github.com/choijhyeok/coupang_agent.git/': The requested URL returned error: 403`
+    - Required human unblock: refresh GitHub credentials with `gh auth login -h github.com` for an account that can push to `choijhyeok/coupang_agent`, then rerun `git push`
   - PR: `https://github.com/choijhyeok/coupang_agent/pull/15`
 
 ### Notes / Blockers
@@ -88,7 +91,10 @@
 - LangGraph checkpoint warning observed during automated tests:
   - `Deserializing unregistered type coupang_cart_agent.contracts.CartAddStage from checkpoint`
   - Current tests still pass, but this is now tracked as follow-up issue `HOW-25` because a future LangGraph release may block these restores.
-- GitHub auth instability was observed mid-run (`gh auth status` reported invalid keychain tokens and one `git push` returned HTTP 403), but the latest retry succeeded and branch HEAD is now published.
+- GitHub publish blocker on 2026-03-16:
+  - `git push` for local HEAD `930fe06` failed with HTTP 403.
+  - `gh auth status` reports the keyring token for `choijhyeok` is invalid, and the inactive stored accounts are also invalid.
+  - Until credentials are refreshed, the latest sold-out handling hardening is committed locally but not published to `origin`.
 - `docker compose up -d postgres` could not be used because port `5432` was already allocated by another local Docker process; the existing local Postgres instance at `postgresql://postgres:postgres@localhost:5432/coupang_cart_agent` was reachable and used for validation instead.
 
 ### Follow-up Issues Created
