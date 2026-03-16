@@ -94,8 +94,8 @@
   - Follow-up rerun after Telegram truststore hardening: result still keeps `failed_stage=session`, but `notification_payload.stage=session` and the workflow no longer fails at `notify`, confirming the Telegram reply path can succeed in this shell once system trust is used
 - [x] Branch / commit / publish status recorded
   - Branch: `wowogur12/how-24-coupang-aoai-live-web-shopping-agent-for-real-time-search`
-  - Latest local commit: verify with `git rev-parse --short HEAD` at review time
-  - Published remote commit: same as current branch HEAD after the latest successful push
+  - Latest local commit: `6b760e9`
+  - Published remote commit: `6b760e9`
   - Push status:
     - Success earlier: `git push -u origin wowogur12/how-24-coupang-aoai-live-web-shopping-agent-for-real-time-search`
     - HTTPS push attempt failed on 2026-03-16:
@@ -103,7 +103,10 @@
       - Result: `remote: Permission to choijhyeok/coupang_agent.git denied to choijhyeok. fatal: unable to access 'https://github.com/choijhyeok/coupang_agent.git/': The requested URL returned error: 403`
     - Publish workaround succeeded:
       - Command: `GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/github_ssh_known_hosts -o IdentitiesOnly=yes -i ~/.ssh/choijhyeok-GitHub -p 443' git push ssh://git@ssh.github.com:443/choijhyeok/coupang_agent.git HEAD:refs/heads/wowogur12/how-24-coupang-aoai-live-web-shopping-agent-for-real-time-search`
-      - Result: latest retries pushed successfully; verify exact published SHA with `git rev-parse --short HEAD`
+      - Result: `Everything up-to-date`
+    - Remote-tracking ref refreshed:
+      - Command: `git fetch origin wowogur12/how-24-coupang-aoai-live-web-shopping-agent-for-real-time-search`
+      - Result: `origin/wowogur12/how-24-coupang-aoai-live-web-shopping-agent-for-real-time-search` updated to `6b760e9`, and local branch no longer shows as ahead
   - PR: `https://github.com/choijhyeok/coupang_agent/pull/15`
   - PR review sweep on 2026-03-16 after latest publish:
     - Public PR conversation is visible.
