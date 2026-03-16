@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import os
 import tempfile
+import threading
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -22,11 +23,17 @@ from coupang_cart_agent.cart_executor import (
     UIElementNotFoundError,
 )
 from coupang_cart_agent.cart_adapters import ExistingChromeCdpCoupangCartPage
+from coupang_cart_agent.cart_adapters import PlaywrightCoupangCartPage
+from coupang_cart_agent.cart_adapters import PlaywrightCoupangSettings
 from coupang_cart_agent.cli import build_live_cart_page, main
 from coupang_cart_agent.config import ConfigError, load_config, load_telegram_bot_token
 from coupang_cart_agent.contracts import (
+    BrowserAgentAction,
+    BrowserAgentActionType,
+    BrowserObservation,
     CartAddFailureReason,
     CartAddStage,
+    ObservedProduct,
     ProductCandidate,
     RequestedItem,
     SelectedProduct,
@@ -346,6 +353,406 @@ class FoundationTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(delivered, [("telegram-chat", "장바구니 담기에 실패했습니다.\n단계: cart_add\n원인: 품절")])
         self.assertIn('"chat_id": "telegram-chat"', stdout.getvalue())
+
+    def test_cli_cart_live_inspect_session_reports_observation(self) -> None:
+        class FakeInspectionPage:
+            def observe(self, *, step_index: int):
+                return BrowserObservation(
+                    step_index=step_index,
+                    url="https://cart.coupang.com/cartView.pang",
+                    title="쿠팡! | 장바구니",
+                    page_kind="session_blocked",
+                    body_text_excerpt="로그인을 하시면, 장바구니에 보관된 상품을 확인하실 수 있습니다.",
+                    interactive_elements=["a:로그인하기"],
+                    observed_products=[ObservedProduct(name="dummy")],
+                    available_options=[],
+                    add_to_cart_visible=False,
+                    blocker_hint="Attach mode requires an operator-prepared logged-in Coupang session.",
+                    cart_count=0,
+                )
+
+            def close(self) -> None:
+                return None
+
+        stdout = io.StringIO()
+        with (
+            patch("coupang_cart_agent.cli.load_config", return_value=load_config({"TELEGRAM_BOT_TOKEN": "test-token"})),
+            patch("coupang_cart_agent.cli.build_live_cart_page", return_value=FakeInspectionPage()),
+            redirect_stdout(stdout),
+        ):
+            exit_code = main(["cart-live-inspect-session"])
+
+        self.assertEqual(exit_code, 2)
+        rendered = stdout.getvalue()
+        self.assertIn('"page_kind": "session_blocked"', rendered)
+        self.assertIn('"blocker_hint": "Attach mode requires an operator-prepared logged-in Coupang session."', rendered)
+
+    def test_existing_cdp_close_tolerates_partially_initialized_playwright_context(self) -> None:
+        page = ExistingChromeCdpCoupangCartPage(
+            settings=PlaywrightCoupangSettings(
+                login_url="https://login.coupang.com",
+                cart_url="https://cart.coupang.com/cartView.pang",
+            ),
+            remote_debugging_port=9223,
+        )
+
+        class BrokenPlaywrightContextManager:
+            def __exit__(self, exc_type, exc, tb):
+                raise AttributeError("'PlaywrightContextManager' object has no attribute '_connection'")
+
+        page._playwright_cm = BrokenPlaywrightContextManager()
+        page.close()
+        self.assertIsNone(page._playwright_cm)
+
+    def test_existing_cdp_dispatches_sync_playwright_work_to_worker_when_event_loop_is_running(self) -> None:
+        page = ExistingChromeCdpCoupangCartPage(
+            settings=PlaywrightCoupangSettings(
+                login_url="https://login.coupang.com",
+                cart_url="https://cart.coupang.com/cartView.pang",
+            ),
+            remote_debugging_port=9223,
+        )
+        worker_thread_ids: list[int] = []
+
+        def fake_attach(_credentials=None):
+            worker_thread_ids.append(threading.get_ident())
+            return "attached_existing_cdp_session"
+
+        with patch.object(PlaywrightCoupangCartPage, "attach_to_logged_in_session", side_effect=fake_attach):
+            result = page.attach_to_logged_in_session(None)
+
+        self.assertEqual(result, "attached_existing_cdp_session")
+        self.assertTrue(worker_thread_ids)
+        self.assertNotEqual(worker_thread_ids[0], threading.get_ident())
+        page.close()
+
+    def test_observe_classifies_cart_login_prompt_as_session_blocked(self) -> None:
+        class FakeLocator:
+            def __init__(self, text: str) -> None:
+                self._text = text
+
+            def inner_text(self, timeout: int | None = None) -> str:
+                return self._text
+
+        class FakePage:
+            url = "https://cart.coupang.com/cartView.pang"
+
+            def title(self) -> str:
+                return "쿠팡! | 장바구니"
+
+            def locator(self, selector: str):
+                self.last_selector = selector
+                return FakeLocator(
+                    "장바구니에 담은 상품이 없습니다.\n로그인을 하시면, 장바구니에 보관된 상품을 확인하실 수 있습니다.\n로그인하기"
+                )
+
+            def screenshot(self, path: str, type: str):
+                return b""
+
+            def content(self) -> str:
+                return "<html></html>"
+
+            def evaluate(self, script: str):
+                return {
+                    "interactive_elements": ["a:로그인하기"],
+                    "observed_products": [],
+                    "selected_product_hint": {},
+                    "available_options": [],
+                    "add_to_cart_visible": False,
+                }
+
+        page = ExistingChromeCdpCoupangCartPage(
+            settings=PlaywrightCoupangSettings(
+                login_url="https://login.coupang.com",
+                cart_url="https://cart.coupang.com/cartView.pang",
+            ),
+            remote_debugging_port=9223,
+        )
+        fake_page = FakePage()
+        with patch.object(ExistingChromeCdpCoupangCartPage, "_page_object", return_value=fake_page):
+            observation = page.observe(step_index=1)
+
+        self.assertEqual(observation.page_kind, "session_blocked")
+        self.assertIn("logged-in Coupang session", observation.blocker_hint or "")
+
+    def test_perform_search_falls_back_to_direct_search_url_when_input_is_missing(self) -> None:
+        class FakeMissingLocator:
+            @property
+            def first(self):
+                return self
+
+            def wait_for(self, *, state: str, timeout: int) -> None:
+                raise RuntimeError("not visible")
+
+        class FakePage:
+            def __init__(self) -> None:
+                self.goto_calls: list[tuple[str, str]] = []
+                self.wait_calls: list[int] = []
+
+            def get_by_role(self, *args, **kwargs):
+                return FakeMissingLocator()
+
+            def locator(self, selector: str):
+                return FakeMissingLocator()
+
+            def goto(self, url: str, *, wait_until: str) -> None:
+                self.goto_calls.append((url, wait_until))
+
+            def wait_for_timeout(self, timeout_ms: int) -> None:
+                self.wait_calls.append(timeout_ms)
+
+        page = ExistingChromeCdpCoupangCartPage(
+            settings=PlaywrightCoupangSettings(
+                login_url="https://login.coupang.com",
+                cart_url="https://cart.coupang.com/cartView.pang",
+            ),
+            remote_debugging_port=9223,
+        )
+        fake_page = FakePage()
+
+        with patch.object(ExistingChromeCdpCoupangCartPage, "_page_object", return_value=fake_page):
+            page._perform_search("양파 1개")
+
+        self.assertEqual(
+            fake_page.goto_calls,
+            [
+                (
+                    "https://www.coupang.com/np/search?component=&q=%EC%96%91%ED%8C%8C%201%EA%B0%9C",
+                    "domcontentloaded",
+                )
+            ],
+        )
+        self.assertEqual(fake_page.wait_calls, [2000])
+
+    def test_observe_treats_search_page_snapshot_as_search_results_not_product_page(self) -> None:
+        class FakeBodyLocator:
+            def inner_text(self, timeout: int | None = None) -> str:
+                return "양파 검색 결과와 필터가 보입니다."
+
+        class FakePage:
+            url = "https://www.coupang.com/np/search?component=&q=%EC%96%91%ED%8C%8C"
+
+            def title(self) -> str:
+                return "쿠팡이 추천하는 양파 관련 혜택과 특가"
+
+            def locator(self, selector: str):
+                return FakeBodyLocator()
+
+            def screenshot(self, path: str, type: str):
+                return b""
+
+            def content(self) -> str:
+                return "<html></html>"
+
+        page = ExistingChromeCdpCoupangCartPage(
+            settings=PlaywrightCoupangSettings(
+                login_url="https://login.coupang.com",
+                cart_url="https://cart.coupang.com/cartView.pang",
+            ),
+            remote_debugging_port=9223,
+        )
+        fake_page = FakePage()
+        search_snapshot = {
+            "interactive_elements": ["input:찾고 싶은 상품을 검색해보세요!"],
+            "observed_products": [
+                {
+                    "name": "국내산 양파, 300g, 1개",
+                    "href": "https://www.coupang.com/vp/products/7548941393",
+                    "price_text": "1,950원",
+                    "rating_text": "4.5",
+                    "review_count_text": "20,147",
+                    "badges": ["Rocket"],
+                    "sold_out": False,
+                }
+            ],
+            "selected_product_hint": {
+                "name": "'양파'에 대한 검색결과",
+                "href": "https://www.coupang.com/np/search?component=&q=%EC%96%91%ED%8C%8C",
+            },
+            "available_options": ["무료배송", "식품"],
+            "add_to_cart_visible": True,
+        }
+
+        with (
+            patch.object(ExistingChromeCdpCoupangCartPage, "_page_object", return_value=fake_page),
+            patch.object(ExistingChromeCdpCoupangCartPage, "_extract_browser_snapshot", return_value=search_snapshot),
+            patch.object(ExistingChromeCdpCoupangCartPage, "_try_extract_cart_count", return_value=None),
+        ):
+            observation = page.observe(step_index=1)
+
+        self.assertEqual(observation.page_kind, "search_results")
+        self.assertEqual(observation.selected_product_hint, {})
+        self.assertEqual(observation.available_options, [])
+        self.assertFalse(observation.add_to_cart_visible)
+
+    def test_observe_treats_cart_page_snapshot_as_browse_not_search_results(self) -> None:
+        class FakeBodyLocator:
+            def inner_text(self, timeout: int | None = None) -> str:
+                return "장바구니(1) 몽베스트 생수 옵션: 2L, 6개 총 1개 상품 구매하기"
+
+        class FakePage:
+            url = "https://cart.coupang.com/cartView.pang"
+
+            def title(self) -> str:
+                return "쿠팡! | 장바구니"
+
+            def locator(self, selector: str):
+                return FakeBodyLocator()
+
+            def screenshot(self, path: str, type: str):
+                return b""
+
+            def content(self) -> str:
+                return "<html></html>"
+
+        page = ExistingChromeCdpCoupangCartPage(
+            settings=PlaywrightCoupangSettings(
+                login_url="https://login.coupang.com",
+                cart_url="https://cart.coupang.com/cartView.pang",
+            ),
+            remote_debugging_port=9223,
+        )
+        fake_page = FakePage()
+        cart_snapshot = {
+            "interactive_elements": ["button:총 1개 상품 구매하기"],
+            "observed_products": [
+                {
+                    "name": "몽베스트 생수 옵션: 2L, 6개",
+                    "href": "https://www.coupang.com/vp/products/4683535861?vendorItemId=94001907703&sourceType=CART",
+                    "price_text": "5,400원",
+                    "rating_text": "4.8",
+                    "review_count_text": "405,145",
+                    "badges": [],
+                    "sold_out": False,
+                }
+            ],
+            "selected_product_hint": {
+                "name": "몽베스트 생수 옵션: 2L, 6개",
+                "href": "https://www.coupang.com/vp/products/4683535861?vendorItemId=94001907703&sourceType=CART",
+            },
+            "available_options": ["2L", "6개"],
+            "add_to_cart_visible": False,
+        }
+
+        with (
+            patch.object(ExistingChromeCdpCoupangCartPage, "_page_object", return_value=fake_page),
+            patch.object(ExistingChromeCdpCoupangCartPage, "_extract_browser_snapshot", return_value=cart_snapshot),
+            patch.object(ExistingChromeCdpCoupangCartPage, "_try_extract_cart_count", return_value=1),
+        ):
+            observation = page.observe(step_index=1)
+
+        self.assertEqual(observation.page_kind, "browse")
+        self.assertEqual(observation.observed_products, [])
+        self.assertEqual(observation.selected_product_hint, {})
+        self.assertEqual(observation.available_options, [])
+        self.assertFalse(observation.add_to_cart_visible)
+
+    def test_locate_action_target_falls_back_to_product_path_when_full_href_does_not_match(self) -> None:
+        class FakeLocator:
+            def __init__(self, selector: str, *, visible: bool) -> None:
+                self.selector = selector
+                self._visible = visible
+
+            @property
+            def first(self):
+                return self
+
+            def wait_for(self, *, state: str, timeout: int) -> None:
+                if not self._visible:
+                    raise RuntimeError("not visible")
+
+        class FakePage:
+            def locator(self, selector: str):
+                visible = "/vp/products/7548941393" in selector and "searchId=" not in selector
+                return FakeLocator(selector, visible=visible)
+
+            def get_by_role(self, *args, **kwargs):
+                return FakeLocator("role", visible=False)
+
+            def get_by_text(self, *args, **kwargs):
+                return FakeLocator("text", visible=False)
+
+        page = ExistingChromeCdpCoupangCartPage(
+            settings=PlaywrightCoupangSettings(
+                login_url="https://login.coupang.com",
+                cart_url="https://cart.coupang.com/cartView.pang",
+            ),
+            remote_debugging_port=9223,
+        )
+        fake_page = FakePage()
+
+        with patch.object(ExistingChromeCdpCoupangCartPage, "_page_object", return_value=fake_page):
+            locator = page._locate_action_target(
+                target_text=None,
+                target_role=None,
+                target_href=(
+                    "https://www.coupang.com/vp/products/7548941393"
+                    "?itemId=19861765108&vendorItemId=86962702528&q=%EC%96%91%ED%8C%8C"
+                    "&searchId=40f04eb64546736&sourceType=search&itemsCount=36&searchRank=3&rank=3"
+                ),
+            )
+
+        self.assertIsNotNone(locator)
+        self.assertIn('/vp/products/7548941393', locator.selector)
+        self.assertNotIn('searchId=', locator.selector)
+
+    def test_execute_click_with_target_href_uses_direct_navigation(self) -> None:
+        class FakePage:
+            def __init__(self) -> None:
+                self.goto_calls: list[tuple[str, str]] = []
+                self.wait_calls: list[int] = []
+
+            def goto(self, url: str, *, wait_until: str) -> None:
+                self.goto_calls.append((url, wait_until))
+
+            def wait_for_timeout(self, timeout_ms: int) -> None:
+                self.wait_calls.append(timeout_ms)
+
+        page = ExistingChromeCdpCoupangCartPage(
+            settings=PlaywrightCoupangSettings(
+                login_url="https://login.coupang.com",
+                cart_url="https://cart.coupang.com/cartView.pang",
+            ),
+            remote_debugging_port=9223,
+        )
+        fake_page = FakePage()
+        action = BrowserAgentAction(
+            action_type=BrowserAgentActionType.CLICK,
+            target_href="https://www.coupang.com/vp/products/6202345578",
+            target_text="한끼 양파(대), 300g, 1개",
+            target_role="link",
+        )
+
+        with (
+            patch.object(ExistingChromeCdpCoupangCartPage, "_page_object", return_value=fake_page),
+            patch.object(ExistingChromeCdpCoupangCartPage, "_assert_no_session_blockers"),
+        ):
+            summary = page.execute_action(action)
+
+        self.assertEqual(
+            fake_page.goto_calls,
+            [("https://www.coupang.com/vp/products/6202345578", "domcontentloaded")],
+        )
+        self.assertEqual(fake_page.wait_calls, [1500])
+        self.assertIn("Opened https://www.coupang.com/vp/products/6202345578", summary)
+
+    def test_normalize_available_options_drops_product_page_noise(self) -> None:
+        normalized = ExistingChromeCdpCoupangCartPage._normalize_available_options(
+            [
+                "쿠폰받기",
+                "수량빼기",
+                "1개",
+                "자세히 보기",
+                "베스트순",
+                "2개",
+                "도움이 돼요",
+                "2명에게 도움이 됐어요",
+                "수량더하기",
+                "문의하기",
+            ]
+        )
+
+        self.assertEqual(normalized, ["1개", "2개"])
 
     def test_contract_import_example(self) -> None:
         request = ShoppingRequest(

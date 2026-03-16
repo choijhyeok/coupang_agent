@@ -7,7 +7,18 @@ from typing import Protocol, TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from .azure_openai import AgentPlan, AgentSearchQuery, AzureOpenAIPlanner
+from .cart_executor import (
+    AccessDeniedError,
+    LoginFailedError,
+    LoginRequiredError,
+    OptionMismatchError,
+    OutOfStockError,
+    SecurityChallengeError,
+    UIElementNotFoundError,
+)
 from .contracts import (
+    BrowserAgentStep,
+    BrowserObservation,
     CartAddFailureReason,
     CartAddResult,
     CartAddStage,
@@ -23,6 +34,7 @@ from .contracts import (
     ShoppingRequestEnvelope,
 )
 from .integration import IntegrationRunResult
+from .live_browser_agent import CoupangLiveBrowserShoppingAgent
 from .notifications import build_failure_notification_payload, build_success_notification_payload
 from .selection import HeuristicProductSelectionService
 from .services import CoupangCartService, NotificationService
@@ -38,6 +50,9 @@ class LiveWorkflowState(TypedDict, total=False):
     candidates_by_item: dict[str, list[dict[str, object]]]
     selections: list[dict[str, object]]
     cart_results: list[dict[str, object]]
+    agent_steps: list[dict[str, object]]
+    agent_reasoning_summary: str
+    last_observation: dict[str, object]
     notification_payload: dict[str, object]
     success: bool
     failed_stage: str | None
@@ -66,6 +81,9 @@ class OperationalStore(Protocol):
         selections: list[SelectedProduct],
         cart_results: list[CartAddResult],
         notification_payload: NotificationPayload | None,
+        agent_reasoning_summary: str | None,
+        last_observation: dict[str, object] | None,
+        agent_steps: list[dict[str, object]] | None,
         success: bool,
         failed_stage: str | None,
         failure_message: str | None,
@@ -126,6 +144,9 @@ class InMemoryOperationalStore:
         selections: list[SelectedProduct],
         cart_results: list[CartAddResult],
         notification_payload: NotificationPayload | None,
+        agent_reasoning_summary: str | None,
+        last_observation: dict[str, object] | None,
+        agent_steps: list[dict[str, object]] | None,
         success: bool,
         failed_stage: str | None,
         failure_message: str | None,
@@ -140,6 +161,9 @@ class InMemoryOperationalStore:
                 "failure_message": failure_message,
                 "notification_payload": None if notification_payload is None else asdict(notification_payload),
                 "agent_plan": None if agent_plan is None else agent_plan.as_dict(),
+                "agent_reasoning_summary": agent_reasoning_summary,
+                "last_observation": last_observation,
+                "agent_steps": list(agent_steps or []),
                 "recorded_at": now,
             }
         )
@@ -206,6 +230,7 @@ class CoupangCartAgentLiveWorkflow:
         notification_service: NotificationService,
         operational_store: OperationalStore,
         agent_planner: AzureOpenAIPlanner,
+        shopping_agent: CoupangLiveBrowserShoppingAgent | None = None,
         checkpointer=None,
     ) -> None:
         self._candidate_source = candidate_source
@@ -213,6 +238,7 @@ class CoupangCartAgentLiveWorkflow:
         self._notification_service = notification_service
         self._operational_store = operational_store
         self._agent_planner = agent_planner
+        self._shopping_agent = shopping_agent
         self._graph = self._build_graph(checkpointer=checkpointer)
 
     def run_envelope(
@@ -228,7 +254,16 @@ class CoupangCartAgentLiveWorkflow:
                 "thread_id": active_thread_id,
                 "request": _shopping_request_to_dict(envelope.request),
                 "request_envelope": _envelope_to_dict(envelope),
+                "candidates_by_item": {},
+                "selections": [],
+                "cart_results": [],
+                "agent_steps": [],
+                "agent_reasoning_summary": "",
+                "last_observation": {},
+                "notification_payload": {},
                 "success": False,
+                "failed_stage": None,
+                "failure_message": None,
             },
             config={"configurable": {"thread_id": active_thread_id}},
         )
@@ -242,6 +277,7 @@ class CoupangCartAgentLiveWorkflow:
         graph = StateGraph(LiveWorkflowState)
         graph.add_node("load_context", self._load_context_node)
         graph.add_node("agent_plan", self._agent_plan_node)
+        graph.add_node("browser_shop", self._browser_shop_node)
         graph.add_node("load_candidates", self._load_candidates_node)
         graph.add_node("select_products", self._select_products_node)
         graph.add_node("add_to_cart", self._add_to_cart_node)
@@ -249,7 +285,8 @@ class CoupangCartAgentLiveWorkflow:
         graph.add_node("persist", self._persist_node)
         graph.add_edge(START, "load_context")
         graph.add_edge("load_context", "agent_plan")
-        graph.add_edge("agent_plan", "load_candidates")
+        graph.add_edge("agent_plan", "browser_shop")
+        graph.add_edge("browser_shop", "load_candidates")
         graph.add_edge("load_candidates", "select_products")
         graph.add_edge("select_products", "add_to_cart")
         graph.add_edge("add_to_cart", "notify")
@@ -282,8 +319,49 @@ class CoupangCartAgentLiveWorkflow:
         )
         return {"agent_plan": plan.as_dict()}
 
+    def _browser_shop_node(self, state: LiveWorkflowState) -> dict[str, object]:
+        if state.get("failed_stage") or self._shopping_agent is None:
+            return {}
+        request = _shopping_request_from_dict(state["request"])
+        plan = _agent_plan_from_dict(state["agent_plan"])
+        try:
+            run = self._shopping_agent.run(
+                request=request,
+                search_queries={query.item_name: query.query for query in plan.search_queries},
+                operator_note=plan.operator_note,
+                selection_brief=plan.selection_brief,
+            )
+        except Exception as exc:
+            classified = _classified_browser_agent_failure(request=request, exc=exc)
+            return {
+                "selections": [_selected_product_to_dict(classified.selected_product)],
+                "cart_results": [_cart_result_to_dict(classified)],
+                "agent_steps": [],
+                "agent_reasoning_summary": str(exc),
+                "last_observation": {},
+                "success": False,
+                "failed_stage": classified.stage.value,
+                "failure_message": classified.message,
+            }
+
+        first_failure = next((result for result in run.cart_results if not result.success), None)
+        return {
+            "selections": [asdict(selection) for selection in run.selections],
+            "cart_results": [_cart_result_to_dict(result) for result in run.cart_results],
+            "agent_steps": [_browser_agent_step_to_dict(step) for step in run.steps],
+            "agent_reasoning_summary": run.reasoning_summary,
+            "last_observation": (
+                {}
+                if run.last_observation is None
+                else _browser_observation_to_dict(run.last_observation)
+            ),
+            "success": first_failure is None and bool(run.cart_results),
+            "failed_stage": None if first_failure is None else first_failure.stage.value,
+            "failure_message": None if first_failure is None else first_failure.message,
+        }
+
     def _load_candidates_node(self, state: LiveWorkflowState) -> dict[str, object]:
-        if state.get("failed_stage"):
+        if state.get("failed_stage") or state.get("cart_results"):
             return {}
         request = _shopping_request_from_dict(state["request"])
         try:
@@ -301,7 +379,7 @@ class CoupangCartAgentLiveWorkflow:
             }
 
     def _select_products_node(self, state: LiveWorkflowState) -> dict[str, object]:
-        if state.get("failed_stage"):
+        if state.get("failed_stage") or state.get("selections"):
             return {}
         request = _shopping_request_from_dict(state["request"])
         selection_context = _selection_context_from_dict(state.get("selection_context", {}))
@@ -324,7 +402,7 @@ class CoupangCartAgentLiveWorkflow:
             }
 
     def _add_to_cart_node(self, state: LiveWorkflowState) -> dict[str, object]:
-        if state.get("failed_stage"):
+        if state.get("failed_stage") or state.get("cart_results"):
             return {}
         selections = [_selected_product_from_dict(raw) for raw in state.get("selections", [])]
         try:
@@ -386,18 +464,25 @@ class CoupangCartAgentLiveWorkflow:
                 "notification_payload": _notification_payload_to_dict(payload),
             }
         except Exception as exc:
+            prior_failed_stage = state.get("failed_stage")
+            prior_failure_message = state.get("failure_message")
             failure_payload = build_failure_notification_payload(
                 chat_id=request.chat_id,
                 stage="notify",
                 reason="텔레그램 알림 전송에 실패했습니다.",
                 detail=str(exc),
             )
-            return {
+            result = {
                 "notification_payload": _notification_payload_to_dict(failure_payload),
                 "success": False,
-                "failed_stage": "notify",
-                "failure_message": str(exc),
             }
+            if prior_failed_stage:
+                result["failed_stage"] = prior_failed_stage
+                result["failure_message"] = prior_failure_message
+            else:
+                result["failed_stage"] = "notify"
+                result["failure_message"] = str(exc)
+            return result
 
     def _persist_node(self, state: LiveWorkflowState) -> dict[str, object]:
         envelope = _envelope_from_dict(state["request_envelope"])
@@ -405,7 +490,7 @@ class CoupangCartAgentLiveWorkflow:
         cart_results = [_cart_result_from_dict(raw) for raw in state.get("cart_results", [])]
         notification_payload = (
             None
-            if "notification_payload" not in state
+            if not state.get("notification_payload")
             else _notification_payload_from_dict(state["notification_payload"])
         )
         agent_plan = None if "agent_plan" not in state else _agent_plan_from_dict(state["agent_plan"])
@@ -416,6 +501,15 @@ class CoupangCartAgentLiveWorkflow:
             selections=selections,
             cart_results=cart_results,
             notification_payload=notification_payload,
+            agent_reasoning_summary=(
+                None if "agent_reasoning_summary" not in state else str(state["agent_reasoning_summary"])
+            ),
+            last_observation=(
+                None if "last_observation" not in state else dict(state.get("last_observation", {}))
+            ),
+            agent_steps=(
+                None if "agent_steps" not in state else list(state.get("agent_steps", []))
+            ),
             success=bool(state.get("success", False)),
             failed_stage=state.get("failed_stage"),
             failure_message=state.get("failure_message"),
@@ -617,6 +711,78 @@ def _notification_payload_to_dict(payload: NotificationPayload) -> dict[str, obj
         "summary": payload.summary,
         "details": dict(payload.details),
     }
+
+
+def _browser_observation_to_dict(observation: BrowserObservation) -> dict[str, object]:
+    raw = asdict(observation)
+    raw["screenshot_base64"] = None
+    return raw
+
+
+def _browser_agent_step_to_dict(step: BrowserAgentStep) -> dict[str, object]:
+    return {
+        "step_index": step.step_index,
+        "item_name": step.item_name,
+        "observation": _browser_observation_to_dict(step.observation),
+        "action": asdict(step.action),
+        "execution_summary": step.execution_summary,
+    }
+
+
+def _classified_browser_agent_failure(
+    *,
+    request: ShoppingRequest,
+    exc: Exception,
+) -> CartAddResult:
+    failure_reason = CartAddFailureReason.UNKNOWN
+    if isinstance(exc, LoginRequiredError):
+        failure_reason = CartAddFailureReason.LOGIN_REQUIRED
+    elif isinstance(exc, AccessDeniedError):
+        failure_reason = CartAddFailureReason.ACCESS_DENIED
+    elif isinstance(exc, SecurityChallengeError):
+        failure_reason = CartAddFailureReason.SECURITY_CHALLENGE
+    elif isinstance(exc, LoginFailedError):
+        failure_reason = CartAddFailureReason.LOGIN_FAILED
+    elif isinstance(exc, OutOfStockError):
+        failure_reason = CartAddFailureReason.OUT_OF_STOCK
+    elif isinstance(exc, OptionMismatchError):
+        failure_reason = CartAddFailureReason.OPTION_MISMATCH
+    elif isinstance(exc, UIElementNotFoundError):
+        failure_reason = CartAddFailureReason.UI_ELEMENT_NOT_FOUND
+
+    stage = CartAddStage.SESSION
+    if failure_reason == CartAddFailureReason.OUT_OF_STOCK:
+        stage = CartAddStage.PRODUCT_PAGE
+    elif failure_reason == CartAddFailureReason.OPTION_MISMATCH:
+        stage = CartAddStage.OPTION_SELECTION
+    elif failure_reason == CartAddFailureReason.UI_ELEMENT_NOT_FOUND:
+        stage = CartAddStage.PRODUCT_PAGE
+
+    item = request.items[0]
+    fallback_selection = SelectedProduct(
+        request_item_name=item.name,
+        candidate=ProductCandidate(
+            product_id=f"pending-{item.name}",
+            name=item.name,
+            price_krw=0,
+            rating=0.0,
+            review_count=0,
+            product_url="",
+            vendor="Coupang",
+        ),
+        quantity=item.quantity,
+        selection_reason="Browser agent stopped before a product could be selected.",
+        score=0.0,
+    )
+    return CartAddResult(
+        success=False,
+        cart_item_id=None,
+        selected_product=fallback_selection,
+        stage=stage,
+        message=str(exc),
+        failure_reason=failure_reason,
+        evidence={"exception_type": exc.__class__.__name__},
+    )
 
 
 def _selection_context_to_dict(context: SelectionContext) -> dict[str, object]:

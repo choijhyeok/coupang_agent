@@ -87,6 +87,11 @@ class FailureCartService:
         ]
 
 
+class RaisingSender:
+    def __call__(self, chat_id: str, text: str) -> None:
+        raise RuntimeError("Telegram delivery failed")
+
+
 class LiveWorkflowTests(unittest.TestCase):
     def build_envelope(self, *, request_id: str, text: str) -> ShoppingRequestEnvelope:
         request = ShoppingRequest(
@@ -184,6 +189,25 @@ class LiveWorkflowTests(unittest.TestCase):
         self.assertEqual(result.failed_stage, "product_page")
         self.assertEqual(store.runs[-1]["failed_stage"], "product_page")
         self.assertIn("장바구니 담기에 실패했습니다.", delivered_messages[0][1])
+
+    def test_live_workflow_preserves_root_failure_stage_when_notification_send_fails(self) -> None:
+        store = InMemoryOperationalStore()
+        workflow = CoupangCartAgentLiveWorkflow(
+            candidate_source=candidate_source,
+            cart_service=FailureCartService(),
+            notification_service=RetryingNotificationService(sender=RaisingSender(), max_attempts=1),
+            operational_store=store,
+            agent_planner=AzureOpenAIPlanner(endpoint=None, api_key=None, deployment=None),
+            checkpointer=InMemorySaver(),
+        )
+
+        result = workflow.run_envelope(self.build_envelope(request_id="req-notify-fail", text="양파 1개 담아줘"))
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.failed_stage, "product_page")
+        self.assertEqual(store.runs[-1]["failed_stage"], "product_page")
+        self.assertEqual(store.runs[-1]["failure_message"], "품절")
+        self.assertEqual(store.runs[-1]["notification_payload"]["stage"], "notify")
 
 
 if __name__ == "__main__":

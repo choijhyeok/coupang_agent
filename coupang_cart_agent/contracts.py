@@ -24,6 +24,7 @@ class CartAddFailureReason(StrEnum):
     ACCESS_DENIED = "access_denied"
     OUT_OF_STOCK = "out_of_stock"
     OPTION_MISMATCH = "option_mismatch"
+    AMBIGUITY = "ambiguity"
     UI_ELEMENT_NOT_FOUND = "ui_element_not_found"
     CHECKOUT_ATTEMPTED = "checkout_attempted"
     UNKNOWN = "unknown"
@@ -164,6 +165,91 @@ class CartAddResult:
     cart_count_after: int | None = None
     checkout_attempted: bool = False
     evidence: dict[str, object] = field(default_factory=dict)
+
+
+class BrowserAgentActionType(StrEnum):
+    """Constrained action space emitted by the browser agent model."""
+
+    SEARCH = "search"
+    CLICK = "click"
+    SELECT_OPTION = "select_option"
+    ADD_TO_CART = "add_to_cart"
+    WAIT = "wait"
+    STOP = "stop"
+
+
+@dataclass(slots=True)
+class ObservedProduct:
+    """Structured product clue extracted from the current browser view."""
+
+    name: str
+    href: str | None = None
+    price_text: str | None = None
+    rating_text: str | None = None
+    review_count_text: str | None = None
+    badges: list[str] = field(default_factory=list)
+    sold_out: bool = False
+
+
+@dataclass(slots=True)
+class BrowserObservation:
+    """Current browser state exposed to the AOAI decision engine."""
+
+    step_index: int
+    url: str
+    title: str
+    page_kind: str
+    body_text_excerpt: str
+    accessibility_lines: list[str] = field(default_factory=list)
+    html_excerpt: str | None = None
+    screenshot_path: str | None = None
+    screenshot_base64: str | None = None
+    interactive_elements: list[str] = field(default_factory=list)
+    observed_products: list[ObservedProduct] = field(default_factory=list)
+    selected_product_hint: dict[str, object] = field(default_factory=dict)
+    available_options: list[str] = field(default_factory=list)
+    add_to_cart_visible: bool = False
+    blocker_hint: str | None = None
+    cart_count: int | None = None
+    last_action_summary: str | None = None
+
+
+@dataclass(slots=True)
+class BrowserAgentAction:
+    """Model-decided action serialized as strict JSON."""
+
+    action_type: BrowserAgentActionType
+    target_text: str | None = None
+    target_role: str | None = None
+    target_href: str | None = None
+    query: str | None = None
+    option_label: str | None = None
+    value: str | None = None
+    wait_seconds: float | None = None
+    reasoning_summary: str = ""
+    blocker_reason: CartAddFailureReason | None = None
+
+
+@dataclass(slots=True)
+class BrowserAgentStep:
+    """One observation -> action -> execution cycle."""
+
+    step_index: int
+    item_name: str
+    observation: BrowserObservation
+    action: BrowserAgentAction
+    execution_summary: str
+
+
+@dataclass(slots=True)
+class BrowserAgentRun:
+    """Complete per-request live browser-agent execution trace."""
+
+    selections: list[SelectedProduct] = field(default_factory=list)
+    cart_results: list[CartAddResult] = field(default_factory=list)
+    reasoning_summary: str = ""
+    last_observation: BrowserObservation | None = None
+    steps: list[BrowserAgentStep] = field(default_factory=list)
 
 
 @dataclass(slots=True)

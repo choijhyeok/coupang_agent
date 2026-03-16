@@ -40,6 +40,7 @@ from .contracts import (
 )
 from .http_server import CoupangCartAgentHttpServer
 from .integration import CoupangCartAgentFlow
+from .live_browser_agent import AzureOpenAIBrowserAgent, CoupangLiveBrowserShoppingAgent
 from .live_workflow import CoupangCartAgentLiveWorkflow
 from .notifications import (
     RetryingNotificationService,
@@ -76,9 +77,12 @@ def _build_live_candidate_source(*, config, fixture_path: str | None):
         from .candidate_sources import LiveCoupangSearchCandidateSource
 
         return LiveCoupangSearchCandidateSource(search_endpoint=config.coupang_search_endpoint)
-    raise ConfigError(
-        "Missing live candidate source configuration. Set COUPANG_SEARCH_ENDPOINT or pass --fixture-path."
-    )
+    def _fallback_only_candidate_source(request: ShoppingRequest):
+        raise RuntimeError(
+            "Fallback candidate source is unavailable. Configure COUPANG_SEARCH_ENDPOINT or pass --fixture-path."
+        )
+
+    return _fallback_only_candidate_source
 
 
 def _build_synthetic_live_envelope(request: ShoppingRequest) -> ShoppingRequestEnvelope:
@@ -123,6 +127,15 @@ def _open_live_workflow(
         credentials=None,
         result_store=SqliteCartResultStore(config.cart_db_path),
     )
+    shopping_agent = CoupangLiveBrowserShoppingAgent(
+        driver=page,
+        model=AzureOpenAIBrowserAgent(
+            endpoint=config.azure_openai_endpoint,
+            api_key=config.azure_openai_api_key,
+            deployment=config.azure_openai_deployment,
+            api_version=config.azure_openai_api_version,
+        ),
+    )
     with PostgresSaver.from_conn_string(config.postgres_dsn) as checkpointer:
         checkpointer.setup()
         workflow = CoupangCartAgentLiveWorkflow(
@@ -136,6 +149,7 @@ def _open_live_workflow(
                 deployment=config.azure_openai_deployment,
                 api_version=config.azure_openai_api_version,
             ),
+            shopping_agent=shopping_agent,
             checkpointer=checkpointer,
         )
         try:
@@ -528,6 +542,79 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
+    if command == "cart-live-inspect-session":
+        parser = argparse.ArgumentParser(prog="python -m coupang_cart_agent cart-live-inspect-session")
+        parser.add_argument("--headed", action="store_true")
+        parsed = parser.parse_args(args[1:])
+
+        try:
+            config = load_config()
+        except ConfigError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+
+        runtime_config = replace(
+            config,
+            coupang_browser_headless=False if parsed.headed else config.coupang_browser_headless,
+        )
+        page = build_live_cart_page(runtime_config)
+        try:
+            try:
+                session_mode = page.attach_to_logged_in_session(None)
+            except Exception as exc:
+                session_mode = None
+                observation = page.observe(step_index=1)
+                payload = {
+                    "launch_mode": config.coupang_browser_launch_mode,
+                    "chrome_profile_directory": config.coupang_chrome_profile_directory,
+                    "attach_mode_requires_operator_login": True,
+                    "session_mode": session_mode,
+                    "error": str(exc),
+                    "error_type": exc.__class__.__name__,
+                    "url": observation.url,
+                    "title": observation.title,
+                    "page_kind": observation.page_kind,
+                    "blocker_hint": observation.blocker_hint,
+                    "body_text_excerpt": observation.body_text_excerpt,
+                    "interactive_elements": observation.interactive_elements,
+                    "available_options": observation.available_options,
+                    "add_to_cart_visible": observation.add_to_cart_visible,
+                    "cart_count": observation.cart_count,
+                }
+                print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+                return 2
+            observation = page.observe(step_index=1)
+            payload = {
+                "launch_mode": config.coupang_browser_launch_mode,
+                "chrome_profile_directory": config.coupang_chrome_profile_directory,
+                "attach_mode_requires_operator_login": True,
+                "session_mode": session_mode,
+                "url": observation.url,
+                "title": observation.title,
+                "page_kind": observation.page_kind,
+                "blocker_hint": observation.blocker_hint,
+                "body_text_excerpt": observation.body_text_excerpt,
+                "interactive_elements": observation.interactive_elements,
+                "available_options": observation.available_options,
+                "add_to_cart_visible": observation.add_to_cart_visible,
+                "cart_count": observation.cart_count,
+            }
+        except Exception as exc:
+            payload = {
+                "launch_mode": config.coupang_browser_launch_mode,
+                "chrome_profile_directory": config.coupang_chrome_profile_directory,
+                "attach_mode_requires_operator_login": True,
+                "error": str(exc),
+                "error_type": exc.__class__.__name__,
+            }
+            print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+            return 2
+        finally:
+            page.close()
+
+        print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+        return 0 if payload["blocker_hint"] is None else 2
+
     if command == "show-captured-candidates":
         parser = argparse.ArgumentParser(prog="python -m coupang_cart_agent show-captured-candidates")
         parser.add_argument(
@@ -745,7 +832,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(
         "Usage: python -m coupang_cart_agent "
-        "[contracts-example|check-config|parse-telegram-message|poll-telegram-once|capture-telegram-live-request|integration-demo|cart-live-add|show-captured-candidates|send-telegram-notification|integration-live-request|integration-live-telegram-once|integration-live-telegram-worker|serve-http]",
+        "[contracts-example|check-config|parse-telegram-message|poll-telegram-once|capture-telegram-live-request|integration-demo|cart-live-add|cart-live-inspect-session|show-captured-candidates|send-telegram-notification|integration-live-request|integration-live-telegram-once|integration-live-telegram-worker|serve-http]",
         file=sys.stderr,
     )
     return 1

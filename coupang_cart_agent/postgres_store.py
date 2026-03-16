@@ -73,6 +73,9 @@ class PostgresOperationalStore:
                         failure_message TEXT,
                         request_envelope_json JSONB NOT NULL,
                         agent_plan_json JSONB,
+                        agent_reasoning_summary TEXT,
+                        last_observation_json JSONB,
+                        agent_steps_json JSONB,
                         selections_json JSONB NOT NULL,
                         cart_results_json JSONB NOT NULL,
                         notification_payload_json JSONB,
@@ -120,6 +123,24 @@ class PostgresOperationalStore:
                         snapshot_at TIMESTAMPTZ NOT NULL
                     )
                     """
+                )
+                self._ensure_column(
+                    cursor,
+                    table_name="workflow_runs",
+                    column_name="agent_reasoning_summary",
+                    ddl="ALTER TABLE workflow_runs ADD COLUMN agent_reasoning_summary TEXT",
+                )
+                self._ensure_column(
+                    cursor,
+                    table_name="workflow_runs",
+                    column_name="last_observation_json",
+                    ddl="ALTER TABLE workflow_runs ADD COLUMN last_observation_json JSONB",
+                )
+                self._ensure_column(
+                    cursor,
+                    table_name="workflow_runs",
+                    column_name="agent_steps_json",
+                    ddl="ALTER TABLE workflow_runs ADD COLUMN agent_steps_json JSONB",
                 )
             connection.commit()
 
@@ -293,6 +314,9 @@ class PostgresOperationalStore:
         selections: list[SelectedProduct],
         cart_results: list[CartAddResult],
         notification_payload: NotificationPayload | None,
+        agent_reasoning_summary: str | None,
+        last_observation: dict[str, object] | None,
+        agent_steps: list[dict[str, object]] | None,
         success: bool,
         failed_stage: str | None,
         failure_message: str | None,
@@ -328,6 +352,7 @@ class PostgresOperationalStore:
                                     None if notification_payload is None else notification_payload.stage
                                 ),
                                 "last_mode": envelope.mode.value,
+                                "agent_reasoning_summary": agent_reasoning_summary,
                                 }
                             )
                         ),
@@ -346,11 +371,14 @@ class PostgresOperationalStore:
                         failure_message,
                         request_envelope_json,
                         agent_plan_json,
+                        agent_reasoning_summary,
+                        last_observation_json,
+                        agent_steps_json,
                         selections_json,
                         cart_results_json,
                         notification_payload_json,
                         recorded_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         thread_id,
@@ -362,6 +390,9 @@ class PostgresOperationalStore:
                         failure_message,
                         Jsonb(_json_ready(asdict(envelope))),
                         None if agent_plan is None else Jsonb(_json_ready(agent_plan.as_dict())),
+                        agent_reasoning_summary,
+                        None if last_observation is None else Jsonb(_json_ready(last_observation)),
+                        None if agent_steps is None else Jsonb(_json_ready(agent_steps)),
                         Jsonb(_json_ready([asdict(selection) for selection in selections])),
                         Jsonb(_json_ready([asdict(result) for result in cart_results])),
                         None if notification_payload is None else Jsonb(_json_ready(asdict(notification_payload))),
@@ -474,6 +505,20 @@ class PostgresOperationalStore:
             }
             for row in rows
         ]
+
+    @staticmethod
+    def _ensure_column(cursor, *, table_name: str, column_name: str, ddl: str) -> None:
+        cursor.execute(
+            """
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_name = %s
+              AND column_name = %s
+            """,
+            (table_name, column_name),
+        )
+        if cursor.fetchone() is None:
+            cursor.execute(ddl)
 
 
 def _json_ready(value: object) -> object:
