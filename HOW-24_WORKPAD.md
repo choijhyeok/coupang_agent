@@ -32,9 +32,12 @@
 - [x] Focused automated tests
   - `uv run python -m unittest tests.test_foundation tests.test_live_browser_agent tests.test_live_workflow`
   - Result: `Ran 35 tests ... OK`
+  - Additional focused Telegram/runtime tests:
+    `uv run python -m unittest tests.test_telegram_intake tests.test_notifications tests.test_live_workflow tests.test_foundation`
+  - Result: `Ran 52 tests ... OK`
 - [x] Full automated regression relevant to touched modules
   - `uv run python -m unittest discover -s tests`
-  - Result: `Ran 71 tests ... OK`
+  - Result: `Ran 72 tests ... OK`
 - [x] Bytecode / import sanity
   - `uv run python -m compileall coupang_cart_agent tests`
   - Result: completed successfully
@@ -61,6 +64,7 @@
   - `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=existing_cdp COUPANG_CHROME_REMOTE_DEBUGGING_PORT=9226 uv run python -m coupang_cart_agent integration-live-request '양파 1개 담아줘' --user-id telegram:8201584878 --chat-id 8201584878`
   - Result on 2026-03-16: request reached LangGraph live workflow, browser attach reached a structured Coupang `session/login_required` failure, persistence completed, and notification send then failed at `notify` because Telegram Bot API TLS verification failed in the local shell
   - Follow-up rerun after workflow fix: result and persisted run now keep `failed_stage=session` / `failure_message=Attach mode requires an operator-prepared logged-in Coupang session.` while still storing a `notification_payload.stage=notify` failure payload, so root-cause cart blocker is no longer overwritten by downstream notification delivery failure
+  - Follow-up rerun after Telegram truststore hardening: result still keeps `failed_stage=session`, but `notification_payload.stage=session` and the workflow no longer fails at `notify`, confirming the Telegram reply path can succeed in this shell once system trust is used
 - [x] Branch / commit / publish status recorded
   - Branch: `wowogur12/how-24-coupang-aoai-live-web-shopping-agent-for-real-time-search`
   - Latest local commit: `ae6b81a`
@@ -101,7 +105,8 @@
   - The long-running `/tmp/how24-open-profile/Profile 1/Cookies` snapshot did not show `member_srl`, reinforcing that “cookie presence somewhere on disk” is not enough to guarantee an attachable logged-in cart session.
 - Telegram live delivery environment note on 2026-03-16:
   - Plain `urllib.request.urlopen('https://api.telegram.org')` from this shell fails with `CERTIFICATE_VERIFY_FAILED` / `self-signed certificate in certificate chain`.
-  - `integration-live-request` against chat `8201584878` therefore reached `failed_stage=notify` after the structured Coupang session blocker, not because of a workflow bug but because the local runtime could not establish a trusted TLS connection to Telegram Bot API.
+  - The Telegram client now uses system trust via `truststore`, and `TelegramBotApiClient(token='test-token').get_me()` reaches Bot API successfully enough to receive an HTTP response (`404 Not Found` for the dummy token instead of TLS failure).
+  - `integration-live-request` against chat `8201584878` therefore no longer fails at `notify`; the remaining live blocker is back to the true Coupang session/auth state.
 - Workflow failure-reporting hardening on 2026-03-16:
   - Notification delivery failures no longer overwrite an existing upstream cart/browser failure stage in the live workflow state.
   - This keeps DB and CLI output aligned with the true shopping blocker even when Telegram delivery fails later in the run.

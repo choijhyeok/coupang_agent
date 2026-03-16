@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -9,6 +10,8 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
+
+import truststore
 
 from .contracts import IntakeMode, RequestedItem, RequestSession, ShoppingRequest, ShoppingRequestEnvelope
 from .telegram_persistence import TelegramIntakeRepository
@@ -64,7 +67,7 @@ class TelegramBotApiClient:
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._token = token
-        self._opener = opener or urllib.request.urlopen
+        self._opener = opener or _build_default_telegram_opener().open
 
     def get_updates(self, *, offset: int | None = None, timeout: int = 30) -> list[dict[str, Any]]:
         payload: dict[str, object] = {"timeout": timeout}
@@ -97,6 +100,12 @@ class TelegramBotApiClient:
         if not data.get("ok", False):
             raise RuntimeError(f"Telegram Bot API returned an error for {method}: {body}")
         return data
+
+
+def _build_default_telegram_opener():
+    ssl_context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ssl_context.load_default_certs()
+    return urllib.request.build_opener(urllib.request.HTTPSHandler(context=ssl_context))
 
 
 class TelegramPollingIntakeService:

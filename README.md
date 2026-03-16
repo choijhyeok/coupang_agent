@@ -317,7 +317,8 @@ Recorded live validation evidence on March 11, 2026:
 - `COUPANG_USERNAME` and `COUPANG_PASSWORD` are optional legacy fields and are not used by the attach-mode live path.
 - `cart-live-inspect-session` is the fastest operator command to confirm whether the attached browser is really logged in, blocked by Access Denied/security, or simply missing a reachable CDP endpoint.
 - A reachable CDP session can still be unusable if Coupang cart renders `로그인하기`; treat that as a session/auth blocker, not a selector problem.
-- Live Telegram delivery also depends on local TLS trust to `https://api.telegram.org`; if the shell cannot open that endpoint without `CERTIFICATE_VERIFY_FAILED`, the workflow can still reach `notify` and fail there even when browser/session logic is working as designed.
+- Live Telegram delivery now uses the system trust store through `truststore`, which avoids the `CERTIFICATE_VERIFY_FAILED` path that plain stdlib HTTPS showed in this workspace.
+- If Telegram delivery still fails, treat it as a token/chat/network issue first; TLS trust is no longer expected to be the default blocker on this branch.
 - `cart-live-add` remains useful for isolated Coupang selector debugging.
 - `integration-demo` and `/smoke/demo` are safe local validation paths.
 - `integration-live-*` commands are the production-shaped integration paths.

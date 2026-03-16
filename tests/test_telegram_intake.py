@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from coupang_cart_agent.contracts import IntakeMode
 from coupang_cart_agent.telegram_intake import (
@@ -289,6 +290,21 @@ class TelegramIntakeTests(unittest.TestCase):
         self.assertIn("offset=44", captured_request["body"])
         self.assertIn("timeout=5", captured_request["body"])
         self.assertEqual(results[0].request.items[0].name, "휴지")
+
+    def test_default_bot_api_client_uses_default_https_opener(self) -> None:
+        captured_request: dict[str, object] = {}
+
+        class FakeOpener:
+            def open(self, request):
+                captured_request["url"] = request.full_url
+                return _FakeHttpResponse({"ok": True, "result": {"id": 1, "is_bot": True}})
+
+        with patch("coupang_cart_agent.telegram_intake._build_default_telegram_opener", return_value=FakeOpener()):
+            client = TelegramBotApiClient(token="test-token")
+            result = client.get_me()
+
+        self.assertEqual(result["id"], 1)
+        self.assertIn("/bottest-token/getMe", captured_request["url"])
 
     def test_poll_once_uses_live_mode_for_multiple_updates(self) -> None:
         client = _StubTelegramClient(
