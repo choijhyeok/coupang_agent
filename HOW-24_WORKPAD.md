@@ -34,7 +34,7 @@
   - Result: `Ran 35 tests ... OK`
 - [x] Full automated regression relevant to touched modules
   - `uv run python -m unittest discover -s tests`
-  - Result: `Ran 70 tests ... OK`
+  - Result: `Ran 71 tests ... OK`
 - [x] Bytecode / import sanity
   - `uv run python -m compileall coupang_cart_agent tests`
   - Result: completed successfully
@@ -63,8 +63,8 @@
   - Follow-up rerun after workflow fix: result and persisted run now keep `failed_stage=session` / `failure_message=Attach mode requires an operator-prepared logged-in Coupang session.` while still storing a `notification_payload.stage=notify` failure payload, so root-cause cart blocker is no longer overwritten by downstream notification delivery failure
 - [x] Branch / commit / publish status recorded
   - Branch: `wowogur12/how-24-coupang-aoai-live-web-shopping-agent-for-real-time-search`
-  - Latest local commit: `83b03fc`
-  - Published remote commit: `83b03fc`
+  - Latest local commit: `ae6b81a`
+  - Published remote commit: `ae6b81a`
   - Push status:
     - Success earlier: `git push -u origin wowogur12/how-24-coupang-aoai-live-web-shopping-agent-for-real-time-search`
     - HTTPS push attempt failed on 2026-03-16:
@@ -72,7 +72,7 @@
       - Result: `remote: Permission to choijhyeok/coupang_agent.git denied to choijhyeok. fatal: unable to access 'https://github.com/choijhyeok/coupang_agent.git/': The requested URL returned error: 403`
     - Publish workaround succeeded:
       - Command: `GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/github_ssh_known_hosts -o IdentitiesOnly=yes -i ~/.ssh/choijhyeok-GitHub -p 443' git push ssh://git@ssh.github.com:443/choijhyeok/coupang_agent.git HEAD:refs/heads/wowogur12/how-24-coupang-aoai-live-web-shopping-agent-for-real-time-search`
-      - Result: latest retries pushed through `83b03fc`
+      - Result: latest retries pushed through `ae6b81a`
   - PR: `https://github.com/choijhyeok/coupang_agent/pull/15`
   - PR review sweep on 2026-03-16:
     - Public PR conversation is visible.
@@ -137,6 +137,8 @@
 - `HOW-25` Backlog: `[Coupang] Allowlist LangGraph checkpoint enum types for persisted live workflow state`
   - Related to `HOW-24`
 - `HOW-26` Backlog: `[Coupang] Add operator diagnostics for validating an attachable logged-in Chrome session`
+  - Related to `HOW-24`
+- `HOW-27` Backlog: `[Telegram] Add Bot API TLS trust preflight`
   - Related to `HOW-24`
 - `HOW-27` Backlog: `[Telegram] Add Bot API TLS trust preflight`
   - Related to `HOW-24`
