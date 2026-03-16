@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import os
 import tempfile
+import threading
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -22,6 +23,7 @@ from coupang_cart_agent.cart_executor import (
     UIElementNotFoundError,
 )
 from coupang_cart_agent.cart_adapters import ExistingChromeCdpCoupangCartPage
+from coupang_cart_agent.cart_adapters import PlaywrightCoupangCartPage
 from coupang_cart_agent.cart_adapters import PlaywrightCoupangSettings
 from coupang_cart_agent.cli import build_live_cart_page, main
 from coupang_cart_agent.config import ConfigError, load_config, load_telegram_bot_token
@@ -399,6 +401,29 @@ class FoundationTests(unittest.TestCase):
         page._playwright_cm = BrokenPlaywrightContextManager()
         page.close()
         self.assertIsNone(page._playwright_cm)
+
+    def test_existing_cdp_dispatches_sync_playwright_work_to_worker_when_event_loop_is_running(self) -> None:
+        page = ExistingChromeCdpCoupangCartPage(
+            settings=PlaywrightCoupangSettings(
+                login_url="https://login.coupang.com",
+                cart_url="https://cart.coupang.com/cartView.pang",
+            ),
+            remote_debugging_port=9223,
+        )
+        worker_thread_ids: list[int] = []
+
+        def fake_attach(_credentials=None):
+            worker_thread_ids.append(threading.get_ident())
+            return "attached_existing_cdp_session"
+
+        with patch.object(PlaywrightCoupangCartPage, "attach_to_logged_in_session", side_effect=fake_attach):
+            with patch.object(ExistingChromeCdpCoupangCartPage, "_event_loop_running", return_value=True):
+                result = page.attach_to_logged_in_session(None)
+
+        self.assertEqual(result, "attached_existing_cdp_session")
+        self.assertTrue(worker_thread_ids)
+        self.assertNotEqual(worker_thread_ids[0], threading.get_ident())
+        page.close()
 
     def test_contract_import_example(self) -> None:
         request = ShoppingRequest(

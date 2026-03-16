@@ -31,10 +31,10 @@
 
 - [x] Focused automated tests
   - `uv run python -m unittest tests.test_foundation tests.test_live_browser_agent tests.test_live_workflow`
-  - Result: `Ran 32 tests ... OK`
+  - Result: `Ran 33 tests ... OK`
 - [x] Full automated regression relevant to touched modules
   - `uv run python -m unittest discover -s tests`
-  - Result: `Ran 68 tests ... OK`
+  - Result: `Ran 69 tests ... OK`
 - [x] Bytecode / import sanity
   - `uv run python -m compileall coupang_cart_agent tests`
   - Result: completed successfully
@@ -53,7 +53,7 @@
   - `COUPANG_BROWSER_LAUNCH_MODE=browser_use COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Profile 1' uv run python -m coupang_cart_agent cart-live-inspect-session`
   - Result: attached copied-profile session reaches `https://cart.coupang.com/cartView.pang` but still shows `로그인하기`; classified `LoginRequiredError`
   - `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=existing_cdp COUPANG_CHROME_REMOTE_DEBUGGING_PORT=9223 uv run python -m coupang_cart_agent cart-live-inspect-session`
-  - Result on 2026-03-16: returns structured JSON without teardown traceback; current environment still reports Playwright sync-in-async attach failure before session validation
+  - Result on 2026-03-16 after worker-thread hardening: returns structured `LoginFailedError` without teardown traceback or `sync-in-async` Playwright failure; current blocker is now the expected “no reachable logged-in operator CDP session”
 - [ ] Telegram request -> agent -> Coupang cart -> Telegram reply evidence 1건
 - [x] Branch / commit / publish status recorded
   - Branch: `wowogur12/how-24-coupang-aoai-live-web-shopping-agent-for-real-time-search`
@@ -98,6 +98,7 @@
 - Attach-session diagnostic stability fix on 2026-03-16:
   - `PlaywrightContextManager` could be left partially initialized on attach failures and then crash in `close()` with `AttributeError: ... _connection`.
   - `cart-live-inspect-session` now exits with structured JSON instead of a teardown traceback when attach fails early.
+  - `ExistingChromeCdpCoupangCartPage` now dispatches Playwright sync setup onto a dedicated worker thread when an asyncio loop is already running, so the attach path no longer dies with `It looks like you are using Playwright Sync API inside the asyncio loop.`
 - LangGraph checkpoint warning observed during automated tests:
   - `Deserializing unregistered type coupang_cart_agent.contracts.CartAddStage from checkpoint`
   - Current tests still pass, but this is now tracked as follow-up issue `HOW-25` because a future LangGraph release may block these restores.

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+import queue
 import shutil
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -848,16 +851,77 @@ class ExistingChromeCdpCoupangCartPage(PlaywrightCoupangCartPage):
     ) -> None:
         super().__init__(settings)
         self._remote_debugging_port = remote_debugging_port
+        self._worker_thread: threading.Thread | None = None
+        self._worker_queue: queue.Queue[tuple[Callable[[], object] | None, queue.Queue[tuple[bool, object]] | None]] | None = None
+
+    def attach_to_logged_in_session(self, credentials: SessionCredentials | None = None) -> str:
+        return str(
+            self._run_on_worker(
+                lambda: super(ExistingChromeCdpCoupangCartPage, self).attach_to_logged_in_session(credentials)
+            )
+        )
+
+    def assert_logged_in(self) -> None:
+        self._run_on_worker(super(ExistingChromeCdpCoupangCartPage, self).assert_logged_in)
+
+    def open_product(self, product_url: str) -> None:
+        self._run_on_worker(
+            lambda: super(ExistingChromeCdpCoupangCartPage, self).open_product(product_url)
+        )
+
+    def assert_in_stock(self) -> None:
+        self._run_on_worker(super(ExistingChromeCdpCoupangCartPage, self).assert_in_stock)
+
+    def select_options(self, selection: SelectedProduct) -> dict[str, str]:
+        return dict(
+            self._run_on_worker(
+                lambda: super(ExistingChromeCdpCoupangCartPage, self).select_options(selection)
+            )
+        )
+
+    def cart_snapshot(self) -> CartSnapshot:
+        snapshot = self._run_on_worker(super(ExistingChromeCdpCoupangCartPage, self).cart_snapshot)
+        assert isinstance(snapshot, CartSnapshot)
+        return snapshot
+
+    def add_to_cart(self) -> str:
+        return str(self._run_on_worker(super(ExistingChromeCdpCoupangCartPage, self).add_to_cart))
+
+    def checkout_started(self) -> bool:
+        return bool(self._run_on_worker(super(ExistingChromeCdpCoupangCartPage, self).checkout_started))
+
+    def observe(
+        self,
+        *,
+        step_index: int,
+        last_action_summary: str | None = None,
+    ) -> BrowserObservation:
+        observation = self._run_on_worker(
+            lambda: super(ExistingChromeCdpCoupangCartPage, self).observe(
+                step_index=step_index,
+                last_action_summary=last_action_summary,
+            )
+        )
+        assert isinstance(observation, BrowserObservation)
+        return observation
+
+    def execute_action(self, action: BrowserAgentAction) -> str:
+        return str(
+            self._run_on_worker(
+                lambda: super(ExistingChromeCdpCoupangCartPage, self).execute_action(action)
+            )
+        )
 
     def close(self) -> None:
-        if self._browser is not None:
-            self._browser.close()
-        self._close_playwright_context_manager()
-        self._playwright_cm = None
-        self._playwright = None
-        self._browser = None
-        self._context = None
-        self._page = None
+        if self._worker_thread is not None and self._worker_thread.is_alive():
+            self._run_on_worker(self._close_local_resources)
+            assert self._worker_queue is not None
+            self._worker_queue.put((None, None))
+            self._worker_thread.join(timeout=5)
+            self._worker_thread = None
+            self._worker_queue = None
+            return
+        self._close_local_resources()
 
     def _page_object(self) -> Page:
         if self._page is None:
@@ -890,6 +954,61 @@ class ExistingChromeCdpCoupangCartPage(PlaywrightCoupangCartPage):
 
     def _attached_session_mode(self) -> str:
         return "attached_existing_cdp_session"
+
+    def _close_local_resources(self) -> None:
+        if self._browser is not None:
+            self._browser.close()
+        self._close_playwright_context_manager()
+        self._playwright_cm = None
+        self._playwright = None
+        self._browser = None
+        self._context = None
+        self._page = None
+
+    def _run_on_worker(self, operation: Callable[[], object]) -> object:
+        if self._worker_thread is not None and threading.current_thread() is self._worker_thread:
+            return operation()
+        if not self._event_loop_running():
+            return operation()
+        if self._worker_thread is None or self._worker_queue is None or not self._worker_thread.is_alive():
+            self._worker_queue = queue.Queue()
+            self._worker_thread = threading.Thread(
+                target=self._worker_main,
+                args=(self._worker_queue,),
+                name="existing-cdp-playwright-worker",
+                daemon=True,
+            )
+            self._worker_thread.start()
+        response_queue: queue.Queue[tuple[bool, object]] = queue.Queue(maxsize=1)
+        self._worker_queue.put((operation, response_queue))
+        success, payload = response_queue.get()
+        if success:
+            return payload
+        assert isinstance(payload, BaseException)
+        raise payload
+
+    def _worker_main(
+        self,
+        work_queue: queue.Queue[tuple[Callable[[], object] | None, queue.Queue[tuple[bool, object]] | None]],
+    ) -> None:
+        while True:
+            operation, response_queue = work_queue.get()
+            if operation is None:
+                break
+            try:
+                result = operation()
+            except BaseException as exc:
+                assert response_queue is not None
+                response_queue.put((False, exc))
+            else:
+                assert response_queue is not None
+                response_queue.put((True, result))
+
+    def _event_loop_running(self) -> bool:
+        try:
+            return asyncio.get_running_loop().is_running()
+        except RuntimeError:
+            return False
 
 
 class BrowserUseCoupangCartPage(ChromeCdpCoupangCartPage):
