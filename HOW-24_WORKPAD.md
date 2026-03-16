@@ -51,7 +51,6 @@
   - Live evidence on 2026-03-16:
     - `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=browser_use COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Default' uv run python -m coupang_cart_agent integration-live-request '한끼 양파 300g 1개 담아줘' --user-id telegram:8201584878 --chat-id 8201584878`
     - Result: attached logged-in `Default` session started from Coupang cart, used observation-driven search without a fixed product URL, opened real product `6202345578`, observed a cleaned product-page state with `available_options=[]` and `add_to_cart_visible=true`, added to cart successfully, and persisted `workflow_runs.success=true`.
-- [ ] Different request 2건 이상 without fixed URL
 - [x] Different request 2건 이상 without fixed URL
   - Live evidence on 2026-03-16:
     - Request 1: `한끼 양파 300g 1개 담아줘`
@@ -106,7 +105,7 @@
       - Command: `GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/github_ssh_known_hosts -o IdentitiesOnly=yes -i ~/.ssh/choijhyeok-GitHub -p 443' git push ssh://git@ssh.github.com:443/choijhyeok/coupang_agent.git HEAD:refs/heads/wowogur12/how-24-coupang-aoai-live-web-shopping-agent-for-real-time-search`
       - Result: latest retries pushed successfully; verify exact published SHA with `git rev-parse --short HEAD`
   - PR: `https://github.com/choijhyeok/coupang_agent/pull/15`
-  - PR review sweep on 2026-03-16:
+  - PR review sweep on 2026-03-16 after latest publish:
     - Public PR conversation is visible.
     - No review submissions or actionable review comments are present at this time.
 
