@@ -31,7 +31,7 @@
 
 - [x] Focused automated tests
   - `uv run python -m unittest tests.test_foundation tests.test_live_browser_agent tests.test_live_workflow`
-  - Result: `Ran 34 tests ... OK`
+  - Result: `Ran 35 tests ... OK`
 - [x] Full automated regression relevant to touched modules
   - `uv run python -m unittest discover -s tests`
   - Result: `Ran 70 tests ... OK`
@@ -60,6 +60,7 @@
 - [x] Telegram request -> agent -> Coupang cart -> Telegram reply failure-path evidence 1건
   - `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=existing_cdp COUPANG_CHROME_REMOTE_DEBUGGING_PORT=9226 uv run python -m coupang_cart_agent integration-live-request '양파 1개 담아줘' --user-id telegram:8201584878 --chat-id 8201584878`
   - Result on 2026-03-16: request reached LangGraph live workflow, browser attach reached a structured Coupang `session/login_required` failure, persistence completed, and notification send then failed at `notify` because Telegram Bot API TLS verification failed in the local shell
+  - Follow-up rerun after workflow fix: result and persisted run now keep `failed_stage=session` / `failure_message=Attach mode requires an operator-prepared logged-in Coupang session.` while still storing a `notification_payload.stage=notify` failure payload, so root-cause cart blocker is no longer overwritten by downstream notification delivery failure
 - [x] Branch / commit / publish status recorded
   - Branch: `wowogur12/how-24-coupang-aoai-live-web-shopping-agent-for-real-time-search`
   - Latest local commit: `83b03fc`
@@ -101,6 +102,9 @@
 - Telegram live delivery environment note on 2026-03-16:
   - Plain `urllib.request.urlopen('https://api.telegram.org')` from this shell fails with `CERTIFICATE_VERIFY_FAILED` / `self-signed certificate in certificate chain`.
   - `integration-live-request` against chat `8201584878` therefore reached `failed_stage=notify` after the structured Coupang session blocker, not because of a workflow bug but because the local runtime could not establish a trusted TLS connection to Telegram Bot API.
+- Workflow failure-reporting hardening on 2026-03-16:
+  - Notification delivery failures no longer overwrite an existing upstream cart/browser failure stage in the live workflow state.
+  - This keeps DB and CLI output aligned with the true shopping blocker even when Telegram delivery fails later in the run.
 - Direct launch attempt with the real local profile:
   - `"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --user-data-dir="$HOME/Library/Application Support/Google/Chrome" --profile-directory='Profile 1' --remote-debugging-port=9224 --no-first-run --no-default-browser-check about:blank`
   - Result: Chrome process exited immediately, `http://127.0.0.1:9224` was never reachable, so this workspace could not produce a fresh authenticated `Profile 1` CDP session automatically.

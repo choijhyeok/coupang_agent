@@ -464,18 +464,25 @@ class CoupangCartAgentLiveWorkflow:
                 "notification_payload": _notification_payload_to_dict(payload),
             }
         except Exception as exc:
+            prior_failed_stage = state.get("failed_stage")
+            prior_failure_message = state.get("failure_message")
             failure_payload = build_failure_notification_payload(
                 chat_id=request.chat_id,
                 stage="notify",
                 reason="텔레그램 알림 전송에 실패했습니다.",
                 detail=str(exc),
             )
-            return {
+            result = {
                 "notification_payload": _notification_payload_to_dict(failure_payload),
                 "success": False,
-                "failed_stage": "notify",
-                "failure_message": str(exc),
             }
+            if prior_failed_stage:
+                result["failed_stage"] = prior_failed_stage
+                result["failure_message"] = prior_failure_message
+            else:
+                result["failed_stage"] = "notify"
+                result["failure_message"] = str(exc)
+            return result
 
     def _persist_node(self, state: LiveWorkflowState) -> dict[str, object]:
         envelope = _envelope_from_dict(state["request_envelope"])
