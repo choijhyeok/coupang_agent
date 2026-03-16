@@ -136,14 +136,13 @@ class IntegrationFlowTests(unittest.TestCase):
         )
 
         self.assertFalse(result.success)
-        self.assertEqual(result.failed_stage, "product_page")
-        self.assertEqual(result.cart_results[0].success, False)
-        self.assertEqual(result.cart_results[0].failure_reason.value, "out_of_stock")
+        self.assertEqual(result.failed_stage, "selection")
+        self.assertEqual(result.cart_results, [])
         self.assertFalse(result.notification_payload.success)
         self.assertEqual(len(delivered_messages), 1)
         self.assertIn("장바구니 담기에 실패했습니다.", delivered_messages[0][1])
-        self.assertIn("단계: product_page", delivered_messages[0][1])
-        self.assertIn("out_of_stock", delivered_messages[0][1])
+        self.assertIn("단계: selection", delivered_messages[0][1])
+        self.assertIn("explicit request constraints", delivered_messages[0][1])
 
 
 if __name__ == "__main__":

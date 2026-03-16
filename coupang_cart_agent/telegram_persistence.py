@@ -500,6 +500,16 @@ class TelegramIntakeRepository:
                         max_price_krw=None
                         if item.get("max_price_krw") is None
                         else int(item["max_price_krw"]),
+                        explicit_brand=None if item.get("explicit_brand") is None else str(item["explicit_brand"]),
+                        explicit_unit_size=(
+                            None if item.get("explicit_unit_size") is None else str(item["explicit_unit_size"])
+                        ),
+                        explicit_pack_count=(
+                            None if item.get("explicit_pack_count") is None else int(item["explicit_pack_count"])
+                        ),
+                        explicit_pack_unit=(
+                            None if item.get("explicit_pack_unit") is None else str(item["explicit_pack_unit"])
+                        ),
                     )
                     for item in request_raw.get("items", [])
                 ],

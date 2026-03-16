@@ -55,6 +55,8 @@ class TelegramIntakeTests(unittest.TestCase):
         self.assertEqual(request.items[0].name, "콜라 제로 355ml")
         self.assertEqual(request.items[0].quantity, 2)
         self.assertEqual(request.items[0].constraints, [])
+        self.assertEqual(request.items[0].explicit_unit_size, "355ml")
+        self.assertIsNone(request.items[0].explicit_pack_count)
 
     def test_parse_message_structures_constraints_and_budget(self) -> None:
         request = self.service.parse_message(
@@ -68,6 +70,10 @@ class TelegramIntakeTests(unittest.TestCase):
         self.assertEqual(item.quantity, 1)
         self.assertEqual(item.constraints, ["무라벨", "빠른배송"])
         self.assertEqual(item.max_price_krw, 20000)
+        self.assertEqual(item.explicit_brand, "삼다수")
+        self.assertEqual(item.explicit_unit_size, "2l")
+        self.assertEqual(item.explicit_pack_count, 1)
+        self.assertEqual(item.explicit_pack_unit, "박스")
 
     def test_parse_message_supports_multiple_items(self) -> None:
         request = self.service.parse_message(

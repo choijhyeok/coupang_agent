@@ -457,6 +457,10 @@ def _requested_item_from_dict(raw: dict[str, object]):
         quantity=max(1, int(raw.get("quantity", 1))),
         constraints=[str(item) for item in raw.get("constraints", [])],
         max_price_krw=(None if raw.get("max_price_krw") is None else int(raw["max_price_krw"])),
+        explicit_brand=(None if raw.get("explicit_brand") is None else str(raw["explicit_brand"])),
+        explicit_unit_size=(None if raw.get("explicit_unit_size") is None else str(raw["explicit_unit_size"])),
+        explicit_pack_count=(None if raw.get("explicit_pack_count") is None else int(raw["explicit_pack_count"])),
+        explicit_pack_unit=(None if raw.get("explicit_pack_unit") is None else str(raw["explicit_pack_unit"])),
     )
 
 

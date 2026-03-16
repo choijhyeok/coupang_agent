@@ -1,11 +1,31 @@
 from __future__ import annotations
 
+import re
+from dataclasses import dataclass
 from dataclasses import replace
 from math import isclose, log10
 from statistics import median
 
-from .contracts import ProductCandidate, RequestedItem, SelectedProduct, SelectionContext, ShoppingRequest
+from .contracts import (
+    ProductCandidate,
+    RequestedItem,
+    SelectedProduct,
+    SelectionContext,
+    ShoppingRequest,
+    canonicalize_size_token,
+)
 from .services import SelectionContextStore
+
+
+_CANDIDATE_PACK_PATTERN = re.compile(
+    r"(?P<count>\d+)\s*(?P<unit>개입|개|병|봉|팩|캔|세트|입|박스|줄|통)\b"
+)
+
+
+@dataclass(slots=True)
+class ConstraintMatch:
+    compliant: bool
+    mismatches: list[str]
 
 
 def normalize_candidate(candidate: ProductCandidate) -> ProductCandidate:
@@ -80,6 +100,7 @@ def score_candidate(
 
 
 def summarize_selection_reason(
+    requested_item: RequestedItem,
     candidate: ProductCandidate,
     *,
     score: float,
@@ -117,6 +138,9 @@ def summarize_selection_reason(
         f"{candidate.review_count:,} reviews, {candidate.price_krw:,} KRW "
         f"({price_note}), score {score:.2f}."
     )
+    explicit_constraints = _format_explicit_constraints(requested_item)
+    if explicit_constraints:
+        summary += f" Matched explicit request constraints: {explicit_constraints}."
     if context_fragments:
         summary += " Context: " + ", ".join(context_fragments) + "."
     return summary
@@ -132,14 +156,29 @@ def select_best_product(
         raise ValueError("At least 3 candidates are required for reliable product selection.")
 
     normalized_candidates = [normalize_candidate(candidate) for candidate in candidates]
-    median_price_krw = float(median(candidate.price_krw for candidate in normalized_candidates))
+    compliant_candidates: list[ProductCandidate] = []
+    mismatch_summaries: list[str] = []
+    for candidate in normalized_candidates:
+        match = _match_explicit_constraints(requested_item, candidate)
+        if match.compliant:
+            compliant_candidates.append(candidate)
+            continue
+        mismatch_summaries.append(f"{candidate.name}: {', '.join(match.mismatches)}")
+
+    if not compliant_candidates:
+        raise ValueError(
+            "No candidates satisfied the explicit request constraints. "
+            + "; ".join(mismatch_summaries[:3])
+        )
+
+    median_price_krw = float(median(candidate.price_krw for candidate in compliant_candidates))
 
     scored_candidates = [
         (
             score_candidate(candidate, median_price_krw=median_price_krw, context=context),
             candidate,
         )
-        for candidate in normalized_candidates
+        for candidate in compliant_candidates
     ]
     scored_candidates.sort(
         key=lambda item: (
@@ -164,6 +203,7 @@ def select_best_product(
         candidate=best_candidate,
         quantity=requested_item.quantity,
         selection_reason=summarize_selection_reason(
+            requested_item,
             best_candidate,
             score=best_score,
             median_price_krw=median_price_krw,
@@ -191,3 +231,70 @@ class HeuristicProductSelectionService:
             selections.append(select_best_product(item, candidates, context=context))
 
         return selections
+
+
+def _match_explicit_constraints(requested_item: RequestedItem, candidate: ProductCandidate) -> ConstraintMatch:
+    mismatches: list[str] = []
+    candidate_name = _normalize_match_text(candidate.name)
+
+    if requested_item.explicit_brand and _normalize_match_text(requested_item.explicit_brand) not in candidate_name:
+        mismatches.append(f"brand mismatch for {requested_item.explicit_brand}")
+
+    requested_size = canonicalize_size_token(requested_item.explicit_unit_size)
+    candidate_size = _extract_candidate_unit_size(candidate.name)
+    if requested_size is not None:
+        if candidate_size != requested_size:
+            mismatches.append(f"unit-size mismatch for {requested_item.explicit_unit_size}")
+
+    if requested_item.explicit_pack_count is not None:
+        candidate_pack_count, candidate_pack_unit = _extract_candidate_pack(candidate.name)
+        normalized_requested_unit = _normalize_pack_unit(requested_item.explicit_pack_unit)
+        if candidate_pack_count != requested_item.explicit_pack_count:
+            mismatches.append(
+                f"pack mismatch for {requested_item.explicit_pack_count}{requested_item.explicit_pack_unit or ''}"
+            )
+        elif normalized_requested_unit is not None and candidate_pack_unit != normalized_requested_unit:
+            mismatches.append(
+                f"pack unit mismatch for {requested_item.explicit_pack_count}{requested_item.explicit_pack_unit}"
+            )
+
+    return ConstraintMatch(compliant=not mismatches, mismatches=mismatches)
+
+
+def _extract_candidate_unit_size(name: str) -> str | None:
+    return canonicalize_size_token(name)
+
+
+def _extract_candidate_pack(name: str) -> tuple[int | None, str | None]:
+    matches = list(_CANDIDATE_PACK_PATTERN.finditer(name))
+    if not matches:
+        x_match = re.search(r"[xX]\s*(?P<count>\d+)\b", name)
+        if x_match is None:
+            return None, None
+        return int(x_match.group("count")), None
+    match = matches[-1]
+    return int(match.group("count")), _normalize_pack_unit(match.group("unit"))
+
+
+def _normalize_pack_unit(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if normalized == "개입":
+        return "개"
+    return normalized or None
+
+
+def _normalize_match_text(value: str) -> str:
+    return re.sub(r"[^0-9a-z가-힣]+", "", value.lower())
+
+
+def _format_explicit_constraints(requested_item: RequestedItem) -> str:
+    fragments: list[str] = []
+    if requested_item.explicit_brand:
+        fragments.append(f"brand {requested_item.explicit_brand}")
+    if requested_item.explicit_unit_size:
+        fragments.append(f"size {requested_item.explicit_unit_size}")
+    if requested_item.explicit_pack_count is not None and requested_item.explicit_pack_unit:
+        fragments.append(f"pack {requested_item.explicit_pack_count}{requested_item.explicit_pack_unit}")
+    return ", ".join(fragments)

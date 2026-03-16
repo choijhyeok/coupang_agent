@@ -86,6 +86,84 @@ class SelectionTests(unittest.TestCase):
 
         self.assertEqual(selected.candidate.product_id, "trusted")
 
+    def test_select_best_product_respects_explicit_brand_and_pack_constraints(self) -> None:
+        requested_item = RequestedItem(
+            name="삼다수 2L",
+            explicit_brand="삼다수",
+            explicit_unit_size="2l",
+            explicit_pack_count=1,
+            explicit_pack_unit="개",
+        )
+        selected = select_best_product(
+            requested_item,
+            [
+                candidate(
+                    product_id="wrong-brand-6pack",
+                    name="몽베스트 생수, 2L, 6개",
+                    price_krw=6800,
+                    rating=4.9,
+                    review_count=21000,
+                ),
+                candidate(
+                    product_id="right-brand-1pack",
+                    name="삼다수 생수, 2L, 1개",
+                    price_krw=1300,
+                    rating=4.7,
+                    review_count=8300,
+                ),
+                candidate(
+                    product_id="right-brand-6pack",
+                    name="삼다수 생수, 2L, 6개",
+                    price_krw=7200,
+                    rating=4.8,
+                    review_count=12000,
+                ),
+            ],
+        )
+
+        self.assertEqual(selected.candidate.product_id, "right-brand-1pack")
+        self.assertIn("Matched explicit request constraints", selected.selection_reason)
+
+    def test_select_best_product_fails_safely_when_only_pack_mismatches_exist(self) -> None:
+        requested_item = RequestedItem(
+            name="삼다수 2L",
+            explicit_brand="삼다수",
+            explicit_unit_size="2l",
+            explicit_pack_count=1,
+            explicit_pack_unit="개",
+        )
+
+        with self.assertRaises(ValueError) as context:
+            select_best_product(
+                requested_item,
+                [
+                    candidate(
+                        product_id="six-pack-a",
+                        name="삼다수 생수, 2L, 6개",
+                        price_krw=6900,
+                        rating=4.8,
+                        review_count=12000,
+                    ),
+                    candidate(
+                        product_id="six-pack-b",
+                        name="삼다수 생수, 2L, 12개",
+                        price_krw=12800,
+                        rating=4.9,
+                        review_count=18000,
+                    ),
+                    candidate(
+                        product_id="wrong-brand",
+                        name="몽베스트 생수, 2L, 6개",
+                        price_krw=6400,
+                        rating=4.9,
+                        review_count=22000,
+                    ),
+                ],
+            )
+
+        self.assertIn("explicit request constraints", str(context.exception))
+        self.assertIn("pack mismatch", str(context.exception))
+
     def test_select_best_product_rejects_small_candidate_sets(self) -> None:
         requested_item = RequestedItem(name="라면")
 

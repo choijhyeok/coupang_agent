@@ -5,7 +5,7 @@ import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass, field
 
-from .contracts import PriorPurchaseRecord, SessionSelectionSignal, ShoppingRequest
+from .contracts import PriorPurchaseRecord, SessionSelectionSignal, ShoppingRequest, build_requested_item_search_query
 
 
 @dataclass(slots=True)
@@ -70,7 +70,8 @@ class AzureOpenAIPlanner:
                     "content": (
                         "You are an operations planner for a Telegram-to-Coupang cart workflow. "
                         "Return strict JSON with keys search_queries, operator_note, selection_brief. "
-                        "search_queries must be a list of objects with item_name and query."
+                        "search_queries must be a list of objects with item_name and query. "
+                        "Treat explicit brand, unit-size, and pack-size constraints as hard requirements."
                     ),
                 },
                 {
@@ -154,10 +155,12 @@ class AzureOpenAIPlanner:
         recent_signals = ", ".join(signal.signal for signal in recent_session_signals[:2])
         search_queries = []
         for item in request.items:
-            fragments = [item.name]
-            if item.constraints:
-                fragments.append(" ".join(item.constraints))
-            search_queries.append(AgentSearchQuery(item_name=item.name, query=" ".join(fragments)))
+            search_queries.append(
+                AgentSearchQuery(
+                    item_name=item.name,
+                    query=build_requested_item_search_query(item),
+                )
+            )
 
         note_fragments = ["Prefer high-rating, high-review products without blindly picking the cheapest option."]
         if prior_product_names:
@@ -169,7 +172,10 @@ class AzureOpenAIPlanner:
             mode="fallback",
             search_queries=search_queries,
             operator_note=" ".join(note_fragments),
-            selection_brief="Use request terms as search queries, then apply heuristic ranking using rating, reviews, and price.",
+            selection_brief=(
+                "Use request terms as search queries, keep explicit brand and pack/unit-size constraints as hard "
+                "filters, then rank matching candidates with rating, reviews, and price."
+            ),
             warnings=[],
         )
 
