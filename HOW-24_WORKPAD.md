@@ -111,6 +111,8 @@
   - Follow-up review check on 2026-03-16:
     - `gh pr view 15 --json number,state,title,reviewDecision,comments,reviews,headRefName,commits`
     - Result: blocked by the local GitHub token policy (`Your network administrator has blocked access to GitHub except for the 'KT Corp. - EMU' enterprises.`), so no newer CLI-backed review metadata could be fetched from this shell.
+  - Linear status comment refreshed on 2026-03-16:
+    - Posted an issue comment summarizing the two verified live successes, the cart-start and option-observation fixes, and the remaining explicit brand/pack-size quality debt tracked in `HOW-28`.
 
 ### Notes / Blockers
 
