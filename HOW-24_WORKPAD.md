@@ -89,6 +89,12 @@
   - Local Chrome instance at `http://127.0.0.1:9226/json/version` was reachable and exposed multiple tabs.
   - `existing_cdp` attach against `9226` now works with clean structured output after worker-thread hardening.
   - The attached cart page still rendered the unauthenticated state (`로그인을 하시면, 장바구니에 보관된 상품을 확인하실 수 있습니다.`), and the observation now records that state as `session_blocked`, so the remaining blocker is a non-authenticated Coupang session in that Chrome profile.
+- Copied-profile validation against the real local Chrome profile on 2026-03-16:
+  - `COUPANG_BROWSER_LAUNCH_MODE=cdp_chrome COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Profile 1' COUPANG_CHROME_REMOTE_DEBUGGING_PORT=9227 uv run python -m coupang_cart_agent cart-live-inspect-session`
+  - Result: copied `Profile 1` launch also reached `https://cart.coupang.com/cartView.pang` and still showed `로그인하기`, so both attach strategies currently converge on the same unauthenticated cart state in this workspace.
+- Cookie comparison note:
+  - Source profile DB still contains Coupang cookies including `.coupang.com|member_srl` and `.coupang.com|sid`.
+  - The long-running `/tmp/how24-open-profile/Profile 1/Cookies` snapshot did not show `member_srl`, reinforcing that “cookie presence somewhere on disk” is not enough to guarantee an attachable logged-in cart session.
 - Direct launch attempt with the real local profile:
   - `"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --user-data-dir="$HOME/Library/Application Support/Google/Chrome" --profile-directory='Profile 1' --remote-debugging-port=9224 --no-first-run --no-default-browser-check about:blank`
   - Result: Chrome process exited immediately, `http://127.0.0.1:9224` was never reachable, so this workspace could not produce a fresh authenticated `Profile 1` CDP session automatically.
@@ -116,4 +122,6 @@
 ### Follow-up Issues Created
 
 - `HOW-25` Backlog: `[Coupang] Allowlist LangGraph checkpoint enum types for persisted live workflow state`
+  - Related to `HOW-24`
+- `HOW-26` Backlog: `[Coupang] Add operator diagnostics for validating an attachable logged-in Chrome session`
   - Related to `HOW-24`
