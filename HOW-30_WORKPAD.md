@@ -3,7 +3,7 @@
 ### Environment
 
 - Date: 2026-03-16 KST
-- Branch: `main`
+- Branch: `how-30-post-action-cart-verification`
 - Workspace: `/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-30`
 - Issue type: feature module
 - Linear state: `Todo`
@@ -26,7 +26,7 @@
 - [x] 쿠팡 태그/selector 일부가 바뀌어도 verification이 단일 selector failure로 바로 무력화되지 않는다
 - [x] false positive success 사례를 재현 가능한 fixture 또는 live evidence로 막는다
 - [x] Telegram success notification은 verification 통과 시에만 전송된다
-- [ ] Branch / commit / publish status recorded
+- [x] Branch / commit / publish status recorded
 
 ### Validation
 
@@ -38,7 +38,7 @@
 - [x] Verification evidence persisted
 - [x] Focused tests
 - [x] Full regression
-- [ ] Publish status
+- [x] Publish status
 
 ### Notes / Blockers
 
@@ -57,7 +57,10 @@
   - `tests/test_live_browser_agent.py`
   - `tests/test_cart_verification.py`
   - `tests/test_live_workflow_verification.py`
-- Publish not attempted yet.
+- Branch: `how-30-post-action-cart-verification`
+- Commit: `e0dfa11243e59d9d6cf9abfe2f68e53c0c1233c4`
+- Push: `git push -u origin how-30-post-action-cart-verification` -> success
+- PR: `https://github.com/choijhyeok/coupang_agent/pull/17`
 
 ### Follow-up Issues Created
 
