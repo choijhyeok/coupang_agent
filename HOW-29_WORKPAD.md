@@ -23,6 +23,12 @@
 - [x] Tests cover at least one brand mismatch case and one pack-size mismatch case.
 - [ ] Live validation records one brand-constrained request that either succeeds correctly or fails safely instead of adding the wrong item.
 
+- [x] Branch / commit / publish status recorded
+  - Branch: `codex/how-29-brand-pack-constraints`
+  - Commit: `85e3ded`
+  - Push: `git push -u origin codex/how-29-brand-pack-constraints`
+  - PR: `https://github.com/choijhyeok/coupang_agent/pull/16`
+
 ### Validation
 
 - [x] Focused intake + selection tests
