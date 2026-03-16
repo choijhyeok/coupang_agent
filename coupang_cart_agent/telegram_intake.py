@@ -113,6 +113,25 @@ class TelegramPollingIntakeService:
     _SUFFIX_PATTERN = re.compile(r"(?:장바구니에\s*)?담아줘[.!?~ ]*$")
     _TRAILING_SEPARATOR_PATTERN = re.compile(r"(?:\n|;|,|\s그리고)\s*$")
     _CONSTRAINT_MARKERS = ("옵션", "조건")
+    _UNIT_SIZE_PATTERN = re.compile(r"(?P<size>\d+(?:\.\d+)?)\s*(?P<unit>ml|l|kg|g)\b", re.IGNORECASE)
+    _NON_BRAND_TOKENS = {
+        "생수",
+        "물",
+        "음료",
+        "콜라",
+        "제로",
+        "라면",
+        "컵라면",
+        "양파",
+        "오트밀",
+        "두유",
+        "휴지",
+        "세제",
+        "우유",
+        "계란",
+        "쌀",
+        "물티슈",
+    }
 
     def __init__(
         self,
@@ -384,10 +403,12 @@ class TelegramPollingIntakeService:
         working = self._extract_marker_constraints(working, constraints)
 
         quantity = 1
+        quantity_unit: str | None = None
         quantity_matches = list(self._ORDER_QUANTITY_PATTERN.finditer(working))
         if quantity_matches:
             quantity_match = quantity_matches[-1]
             quantity = int(quantity_match.group("quantity"))
+            quantity_unit = quantity_match.group("unit")
             working = (
                 working[: quantity_match.start()] + " " + working[quantity_match.end() :]
             ).strip(" ,")
@@ -399,11 +420,24 @@ class TelegramPollingIntakeService:
             raise TelegramIntakeError("수량은 1개 이상이어야 합니다.")
 
         deduped_constraints = list(dict.fromkeys(item for item in constraints if item))
+        explicit_unit_size = self._extract_explicit_unit_size(name)
         return RequestedItem(
             name=name,
             quantity=quantity,
             constraints=deduped_constraints,
             max_price_krw=max_price_krw,
+            explicit_brand=self._extract_explicit_brand(name),
+            explicit_unit_size=explicit_unit_size,
+            explicit_pack_count=self._extract_explicit_pack_count(
+                quantity=quantity,
+                quantity_unit=quantity_unit,
+                explicit_unit_size=explicit_unit_size,
+            ),
+            explicit_pack_unit=self._extract_explicit_pack_unit(
+                quantity=quantity,
+                quantity_unit=quantity_unit,
+                explicit_unit_size=explicit_unit_size,
+            ),
         )
 
     def _extract_wrapped_constraints(self, text: str, constraints: list[str]) -> str:
@@ -430,3 +464,54 @@ class TelegramPollingIntakeService:
     def _extend_constraints(constraints: list[str], raw_value: str) -> None:
         parts = re.split(r"\s*(?:,|/|·|및)\s*", raw_value.strip())
         constraints.extend(part for part in parts if part)
+
+    @classmethod
+    def _extract_explicit_brand(cls, text: str) -> str | None:
+        tokens = [token.strip() for token in re.split(r"\s+", text) if token.strip()]
+        has_unit_size = any(cls._UNIT_SIZE_PATTERN.fullmatch(token) is not None for token in tokens)
+        meaningful_tokens = [
+            token
+            for token in tokens
+            if cls._UNIT_SIZE_PATTERN.fullmatch(token) is None and not token.isdigit()
+        ]
+        if not meaningful_tokens:
+            return None
+        brand = meaningful_tokens[0]
+        if len(meaningful_tokens) < 2 and not has_unit_size:
+            return None
+        if brand.lower() in cls._NON_BRAND_TOKENS:
+            return None
+        return brand
+
+    @classmethod
+    def _extract_explicit_unit_size(cls, text: str) -> str | None:
+        match = cls._UNIT_SIZE_PATTERN.search(text)
+        if match is None:
+            return None
+        return f"{match.group('size')}{match.group('unit').lower()}"
+
+    @staticmethod
+    def _extract_explicit_pack_count(
+        *,
+        quantity: int,
+        quantity_unit: str | None,
+        explicit_unit_size: str | None,
+    ) -> int | None:
+        if quantity_unit in {"박스", "팩", "세트", "입"}:
+            return quantity
+        if quantity == 1 and quantity_unit in {"개", "병", "봉", "캔", "통"} and explicit_unit_size is not None:
+            return quantity
+        return None
+
+    @staticmethod
+    def _extract_explicit_pack_unit(
+        *,
+        quantity: int,
+        quantity_unit: str | None,
+        explicit_unit_size: str | None,
+    ) -> str | None:
+        if quantity_unit in {"박스", "팩", "세트", "입"}:
+            return quantity_unit
+        if quantity == 1 and quantity_unit in {"개", "병", "봉", "캔", "통"} and explicit_unit_size is not None:
+            return quantity_unit
+        return None

@@ -309,7 +309,7 @@ class FoundationTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         output = stdout.getvalue()
         self.assertIn('"success": false', output)
-        self.assertIn('"failed_stage": "product_page"', output)
+        self.assertIn('"failed_stage": "selection"', output)
         self.assertIn("장바구니 담기에 실패했습니다.", output)
 
     def test_cli_send_telegram_notification_uses_live_sender_path(self) -> None:

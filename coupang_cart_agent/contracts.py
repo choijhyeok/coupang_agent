@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -36,6 +37,10 @@ class RequestedItem:
     quantity: int = 1
     constraints: list[str] = field(default_factory=list)
     max_price_krw: int | None = None
+    explicit_brand: str | None = None
+    explicit_unit_size: str | None = None
+    explicit_pack_count: int | None = None
+    explicit_pack_unit: str | None = None
 
 
 class IntakeMode(StrEnum):
@@ -178,6 +183,8 @@ def demo_contract_payload() -> dict[str, object]:
         quantity=2,
         constraints=["zero sugar", "can"],
         max_price_krw=18000,
+        explicit_brand="Coke",
+        explicit_unit_size="355ml",
     )
     request = ShoppingRequest(
         user_id="telegram:demo-user",
@@ -233,3 +240,28 @@ def demo_contract_payload() -> dict[str, object]:
         "cart_add_result": asdict(cart_result),
         "notification_payload": asdict(notification),
     }
+
+
+_SIZE_TOKEN_PATTERN = re.compile(
+    r"(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>ml|l|kg|g|L|ML|KG|G)\b"
+)
+
+
+def canonicalize_size_token(value: str | None) -> str | None:
+    if value is None:
+        return None
+    match = _SIZE_TOKEN_PATTERN.search(value)
+    if match is None:
+        normalized = re.sub(r"\s+", "", value).lower()
+        return normalized or None
+    return f"{match.group('value')}{match.group('unit').lower()}"
+
+
+def build_requested_item_search_query(item: RequestedItem) -> str:
+    fragments = [item.name]
+    if item.explicit_pack_count is not None and item.explicit_pack_unit:
+        pack_fragment = f"{item.explicit_pack_count}{item.explicit_pack_unit}"
+        if re.sub(r"\s+", "", pack_fragment).lower() not in re.sub(r"\s+", "", item.name).lower():
+            fragments.append(pack_fragment)
+    fragments.extend(item.constraints)
+    return " ".join(fragment for fragment in fragments if fragment).strip()

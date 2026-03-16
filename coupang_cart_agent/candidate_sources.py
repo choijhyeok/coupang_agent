@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from .contracts import ProductCandidate, RequestedItem, ShoppingRequest
+from .contracts import ProductCandidate, RequestedItem, ShoppingRequest, build_requested_item_search_query
 
 
 def _read_first(raw: Mapping[str, object], *keys: str, default: object = None) -> object:
@@ -207,7 +207,7 @@ class LiveCoupangSearchCandidateSource:
     timeout_seconds: int = 15
 
     def __call__(self, request: ShoppingRequest) -> dict[str, list[ProductCandidate]]:
-        return {item.name: self.search(item.name) for item in request.items}
+        return {item.name: self.search(build_requested_item_search_query(item)) for item in request.items}
 
     def search(self, query: str) -> list[ProductCandidate]:
         url = self._build_url(query)
