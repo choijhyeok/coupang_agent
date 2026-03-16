@@ -31,7 +31,7 @@
 
 - [x] Focused automated tests
   - `uv run python -m unittest tests.test_foundation tests.test_live_browser_agent tests.test_live_workflow`
-  - Result: latest rerun `Ran 45 tests ... OK`
+  - Result: latest rerun `Ran 46 tests ... OK`
   - Additional focused Telegram/runtime tests:
     `uv run python -m unittest tests.test_telegram_intake tests.test_notifications tests.test_live_workflow tests.test_foundation`
   - Result: `Ran 52 tests ... OK`
@@ -52,9 +52,11 @@
     - `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=browser_use COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Default' uv run python -m coupang_cart_agent integration-live-request '한끼 양파 300g 1개 담아줘' --user-id telegram:8201584878 --chat-id 8201584878`
     - Result: attached logged-in `Default` session started from Coupang cart, used observation-driven search without a fixed product URL, opened real product `6202345578`, observed a cleaned product-page state with `available_options=[]` and `add_to_cart_visible=true`, added to cart successfully, and persisted `workflow_runs.success=true`.
 - [ ] Different request 2건 이상 without fixed URL
+- [x] Different request 2건 이상 without fixed URL
   - Live evidence on 2026-03-16:
-    - `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=browser_use COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Default' uv run python -m coupang_cart_agent integration-live-request '삼다수 2L 1개 담아줘' --user-id telegram:8201584878 --chat-id 8201584878`
-    - Result: technical success path completed through search -> detail -> add-to-cart, but the selected item was `몽베스트 생수, 2L, 6개`, not explicit brand `삼다수`, so this run is recorded as evidence of remaining ranking/request-constraint quality debt rather than completion proof for this checkbox.
+    - Request 1: `한끼 양파 300g 1개 담아줘`
+    - Request 2: `생수 2L 1개 담아줘`
+    - Both runs started from an attached logged-in browser/cart session, initiated live search without a predefined product URL, navigated through search results into product detail, and completed add-to-cart successfully.
 - [x] Layout/button variation fallback evidence 1건
   - Live evidence on 2026-03-16:
     - The successful `한끼 양파 300g 1개 담아줘` run attached on `https://cart.coupang.com/cartView.pang`, where no usable search box was exposed in the current page context.
@@ -83,6 +85,9 @@
   - Live evidence on 2026-03-16:
     - `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=browser_use COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Default' uv run python -m coupang_cart_agent integration-live-request '한끼 양파 300g 1개 담아줘' --user-id telegram:8201584878 --chat-id 8201584878`
     - Result: Telegram request reached LangGraph live workflow, the browser agent searched and added a real Coupang product to cart, a Telegram success notification was emitted, and the persisted run recorded `success=true`.
+  - Additional live evidence on 2026-03-16:
+    - `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=browser_use COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Default' uv run python -m coupang_cart_agent integration-live-request '생수 2L 1개 담아줘' --user-id telegram:8201584878 --chat-id 8201584878`
+    - Result: cart-started browse context was coerced into a fresh live search, the agent reached product detail `4683535861`, added to cart successfully, emitted a Telegram success notification, and persisted `workflow_runs.success=true`.
 - [x] Telegram request -> agent -> Coupang cart -> Telegram reply failure-path evidence 1건
   - `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=existing_cdp COUPANG_CHROME_REMOTE_DEBUGGING_PORT=9226 uv run python -m coupang_cart_agent integration-live-request '양파 1개 담아줘' --user-id telegram:8201584878 --chat-id 8201584878`
   - Result on 2026-03-16: request reached LangGraph live workflow, browser attach reached a structured Coupang `session/login_required` failure, persistence completed, and notification send then failed at `notify` because Telegram Bot API TLS verification failed in the local shell
@@ -90,8 +95,8 @@
   - Follow-up rerun after Telegram truststore hardening: result still keeps `failed_stage=session`, but `notification_payload.stage=session` and the workflow no longer fails at `notify`, confirming the Telegram reply path can succeed in this shell once system trust is used
 - [x] Branch / commit / publish status recorded
   - Branch: `wowogur12/how-24-coupang-aoai-live-web-shopping-agent-for-real-time-search`
-  - Latest local commit: `f2ffa6a`
-  - Published remote commit: `f2ffa6a`
+  - Latest local commit: `02b8ea2`
+  - Published remote commit: `02b8ea2`
   - Push status:
     - Success earlier: `git push -u origin wowogur12/how-24-coupang-aoai-live-web-shopping-agent-for-real-time-search`
     - HTTPS push attempt failed on 2026-03-16:
@@ -99,7 +104,7 @@
       - Result: `remote: Permission to choijhyeok/coupang_agent.git denied to choijhyeok. fatal: unable to access 'https://github.com/choijhyeok/coupang_agent.git/': The requested URL returned error: 403`
     - Publish workaround succeeded:
       - Command: `GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/github_ssh_known_hosts -o IdentitiesOnly=yes -i ~/.ssh/choijhyeok-GitHub -p 443' git push ssh://git@ssh.github.com:443/choijhyeok/coupang_agent.git HEAD:refs/heads/wowogur12/how-24-coupang-aoai-live-web-shopping-agent-for-real-time-search`
-      - Result: latest retries pushed through `f2ffa6a`
+      - Result: latest retries pushed through `02b8ea2`
   - PR: `https://github.com/choijhyeok/coupang_agent/pull/15`
   - PR review sweep on 2026-03-16:
     - Public PR conversation is visible.
@@ -142,9 +147,9 @@
   - Product-page option normalization now drops obvious non-option controls such as `쿠폰받기`, `수량빼기`, `수량더하기`, `문의하기`, and `신고하기`.
   - Cart-page observation now treats `cartView.pang` as `browse` state and suppresses cart-item / ad-card candidate extraction so the agent can start a new search instead of misreading existing cart contents as active product candidates.
   - Search-result sold-out copy no longer triggers an early out-of-stock stop before detail-page navigation.
-  - Remaining live blockers are narrower but still open:
+  - Policy-layer coercion now forces a fresh search when the model tries to stop/click from `cartView.pang` browse context, preventing existing cart contents from being treated as the active shopping target.
+  - Remaining follow-up quality debt:
     - Brand-constrained requests can still select a technically addable but request-mismatched product, as seen in the live `삼다수 2L 1개 담아줘` run choosing `몽베스트 생수, 2L, 6개`.
-    - The AOAI live loop can still decide to stop safely on cart-page context based on existing cart state instead of always starting a fresh search for generic requests, as seen in the post-fix `생수 2L 1개 담아줘` run.
     - Real navigation on the attached browser can still intermittently fail with `Page.goto ... Timeout 30000ms exceeded`.
 - Direct launch attempt with the real local profile:
   - `"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --user-data-dir="$HOME/Library/Application Support/Google/Chrome" --profile-directory='Profile 1' --remote-debugging-port=9224 --no-first-run --no-default-browser-check about:blank`

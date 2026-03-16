@@ -254,6 +254,7 @@ class CoupangLiveBrowserShoppingAgent:
                     prior_steps=[step for step in steps if step.item_name == item.name],
                 )
                 action = self._model.decide(context=context, observation=observation)
+                action = _coerce_action_for_context(action=action, context=context, observation=observation)
 
                 if action.action_type == BrowserAgentActionType.STOP:
                     failure_reason = action.blocker_reason or _classify_observation(observation)
@@ -487,6 +488,43 @@ def _optional_text(value: object) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _coerce_action_for_context(
+    *,
+    action: BrowserAgentAction,
+    context: BrowserAgentContext,
+    observation: BrowserObservation,
+) -> BrowserAgentAction:
+    if _should_force_search_from_cart_browse(action=action, observation=observation):
+        return BrowserAgentAction(
+            action_type=BrowserAgentActionType.SEARCH,
+            query=context.search_query,
+            reasoning_summary=(
+                "Start a fresh search from cart/browse context to avoid reusing existing cart contents "
+                "as the active shopping target."
+            ),
+        )
+    return action
+
+
+def _should_force_search_from_cart_browse(
+    *,
+    action: BrowserAgentAction,
+    observation: BrowserObservation,
+) -> bool:
+    if observation.blocker_hint:
+        return False
+    if observation.page_kind != "browse":
+        return False
+    lowered_url = observation.url.lower()
+    if "cart.coupang.com/cartview.pang" not in lowered_url and "/cartview.pang" not in lowered_url:
+        return False
+    return action.action_type in (
+        BrowserAgentActionType.STOP,
+        BrowserAgentActionType.WAIT,
+        BrowserAgentActionType.CLICK,
+    )
 
 
 def _classify_observation(observation: BrowserObservation) -> CartAddFailureReason:

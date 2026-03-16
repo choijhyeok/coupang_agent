@@ -5,6 +5,8 @@ from datetime import UTC, datetime
 
 from coupang_cart_agent.azure_openai import AgentPlan, AgentSearchQuery
 from coupang_cart_agent.contracts import (
+    BrowserAgentAction,
+    BrowserAgentActionType,
     BrowserObservation,
     CartAddFailureReason,
     IntakeMode,
@@ -91,6 +93,17 @@ class RaisingShoppingAgent:
 
     def run(self, *, request, search_queries, operator_note, selection_brief):
         raise self.exc
+
+
+class StaticDecisionModel:
+    def __init__(self, action) -> None:
+        self.action = action
+        self._fallback = DeterministicBrowserAgentModel()
+
+    def decide(self, *, context, observation):
+        if observation.page_kind != "browse":
+            return self._fallback.decide(context=context, observation=observation)
+        return self.action
 
 
 class LiveBrowserAgentTests(unittest.TestCase):
@@ -499,6 +512,69 @@ class LiveBrowserAgentTests(unittest.TestCase):
         self.assertEqual(driver.executed_actions[0], "search")
         self.assertEqual(driver.executed_action_objects[0].query, "한끼 양파 300g")
         self.assertFalse(result.cart_results[0].success)
+
+    def test_agent_forces_search_when_model_stops_from_cart_browse_context(self) -> None:
+        driver = SequencedBrowserDriver(
+            [
+                BrowserObservation(
+                    step_index=1,
+                    url="https://cart.coupang.com/cartView.pang",
+                    title="쿠팡! | 장바구니",
+                    page_kind="browse",
+                    body_text_excerpt="장바구니(1) 몽베스트 생수 옵션: 2L, 6개",
+                    interactive_elements=["button:총 1개 상품 구매하기"],
+                    cart_count=1,
+                ),
+                BrowserObservation(
+                    step_index=2,
+                    url="https://www.coupang.com/np/search?q=%EC%83%9D%EC%88%98+2L",
+                    title="검색 결과",
+                    page_kind="search_results",
+                    body_text_excerpt="생수 2L 검색 결과",
+                    observed_products=[
+                        ObservedProduct(
+                            name="생수 2L 6개",
+                            href="https://www.coupang.com/vp/products/WATER-2L",
+                            price_text="5,400원",
+                            rating_text="4.8",
+                            review_count_text="405,145",
+                        )
+                    ],
+                ),
+                BrowserObservation(
+                    step_index=3,
+                    url="https://www.coupang.com/vp/products/WATER-2L",
+                    title="상품 상세",
+                    page_kind="product_page",
+                    body_text_excerpt="장바구니 담기",
+                    add_to_cart_visible=True,
+                    selected_product_hint={
+                        "name": "생수 2L 6개",
+                        "href": "https://www.coupang.com/vp/products/WATER-2L",
+                    },
+                ),
+            ]
+        )
+        agent = CoupangLiveBrowserShoppingAgent(
+            driver=driver,
+            model=StaticDecisionModel(
+                action=BrowserAgentAction(
+                    action_type=BrowserAgentActionType.STOP,
+                    blocker_reason=CartAddFailureReason.OPTION_MISMATCH,
+                    reasoning_summary="Stop on existing cart state.",
+                )
+            ),
+        )
+
+        result = agent.run(
+            request=self._request(text="생수 2L 1개 담아줘", item_name="생수 2L"),
+            search_queries={"생수 2L": "생수 2L"},
+            operator_note="Start a fresh search instead of reusing cart contents.",
+            selection_brief="Cart page is only a starting point for live search.",
+        )
+
+        self.assertEqual(driver.executed_actions[0], "search")
+        self.assertTrue(result.cart_results[0].success)
 
     def test_agent_classifies_selected_product_sold_out_hint_as_out_of_stock(self) -> None:
         driver = SequencedBrowserDriver(
