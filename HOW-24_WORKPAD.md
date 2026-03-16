@@ -31,7 +31,7 @@
 
 - [x] Focused automated tests
   - `uv run python -m unittest tests.test_foundation tests.test_live_browser_agent tests.test_live_workflow`
-  - Result: `Ran 35 tests ... OK`
+  - Result: latest rerun `Ran 45 tests ... OK`
   - Additional focused Telegram/runtime tests:
     `uv run python -m unittest tests.test_telegram_intake tests.test_notifications tests.test_live_workflow tests.test_foundation`
   - Result: `Ran 52 tests ... OK`
@@ -41,13 +41,27 @@
   - Latest rerun after Telegram truststore hardening:
     `uv run python -m unittest discover -s tests`
   - Result: `Ran 72 tests ... OK`
+  - Latest rerun after cart-page classification hardening:
+    `uv run python -m unittest discover -s tests`
+  - Result: `Ran 82 tests ... OK`
 - [x] Bytecode / import sanity
   - `uv run python -m compileall coupang_cart_agent tests`
   - Result: completed successfully
-- [ ] Live run 1건: search -> detail -> add-to-cart
+- [x] Live run 1건: search -> detail -> add-to-cart
+  - Live evidence on 2026-03-16:
+    - `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=browser_use COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Default' uv run python -m coupang_cart_agent integration-live-request '한끼 양파 300g 1개 담아줘' --user-id telegram:8201584878 --chat-id 8201584878`
+    - Result: attached logged-in `Default` session started from Coupang cart, used observation-driven search without a fixed product URL, opened real product `6202345578`, observed a cleaned product-page state with `available_options=[]` and `add_to_cart_visible=true`, added to cart successfully, and persisted `workflow_runs.success=true`.
 - [ ] Different request 2건 이상 without fixed URL
-- [ ] Layout/button variation fallback evidence 1건
-- [ ] Access Denied or security challenge blocker evidence 1건
+  - Live evidence on 2026-03-16:
+    - `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=browser_use COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Default' uv run python -m coupang_cart_agent integration-live-request '삼다수 2L 1개 담아줘' --user-id telegram:8201584878 --chat-id 8201584878`
+    - Result: technical success path completed through search -> detail -> add-to-cart, but the selected item was `몽베스트 생수, 2L, 6개`, not explicit brand `삼다수`, so this run is recorded as evidence of remaining ranking/request-constraint quality debt rather than completion proof for this checkbox.
+- [x] Layout/button variation fallback evidence 1건
+  - Live evidence on 2026-03-16:
+    - The successful `한끼 양파 300g 1개 담아줘` run attached on `https://cart.coupang.com/cartView.pang`, where no usable search box was exposed in the current page context.
+    - The browser adapter fell back to direct Coupang search URL navigation, then used observation-driven search-result interpretation plus direct `page.goto(target_href)` product opening to reach add-to-cart without relying on a fixed selector path.
+- [x] Access Denied or security challenge blocker evidence 1건
+  - Access Denied evidence already persisted in live workflow history:
+    - `workflow_runs` contains multiple 2026-03-11 runs with `failed_stage=session` and `failure_message=Coupang blocked the automated browser session with Access Denied.`
 - [x] Option ambiguity or out-of-stock safe failure evidence 1건
   - Automated evidence: `tests.test_live_browser_agent.LiveBrowserAgentTests.test_agent_stops_on_option_ambiguity`
   - Live evidence on 2026-03-16:
@@ -65,7 +79,10 @@
   - Result on 2026-03-16 after worker-thread hardening: returns structured `LoginFailedError` without teardown traceback or `sync-in-async` Playwright failure; current blocker is now the expected “no reachable logged-in operator CDP session”
   - `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=existing_cdp COUPANG_CHROME_REMOTE_DEBUGGING_PORT=9226 uv run python -m coupang_cart_agent cart-live-inspect-session`
   - Result on 2026-03-16: reachable CDP session attached, navigated to `https://cart.coupang.com/cartView.pang`, and observed `로그인하기` with `cart_count=0`; output now classifies the page as `session_blocked` with blocker hint `Attach mode requires an operator-prepared logged-in Coupang session.`
-- [ ] Telegram request -> agent -> Coupang cart -> Telegram reply evidence 1건
+- [x] Telegram request -> agent -> Coupang cart -> Telegram reply evidence 1건
+  - Live evidence on 2026-03-16:
+    - `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=browser_use COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Default' uv run python -m coupang_cart_agent integration-live-request '한끼 양파 300g 1개 담아줘' --user-id telegram:8201584878 --chat-id 8201584878`
+    - Result: Telegram request reached LangGraph live workflow, the browser agent searched and added a real Coupang product to cart, a Telegram success notification was emitted, and the persisted run recorded `success=true`.
 - [x] Telegram request -> agent -> Coupang cart -> Telegram reply failure-path evidence 1건
   - `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=existing_cdp COUPANG_CHROME_REMOTE_DEBUGGING_PORT=9226 uv run python -m coupang_cart_agent integration-live-request '양파 1개 담아줘' --user-id telegram:8201584878 --chat-id 8201584878`
   - Result on 2026-03-16: request reached LangGraph live workflow, browser attach reached a structured Coupang `session/login_required` failure, persistence completed, and notification send then failed at `notify` because Telegram Bot API TLS verification failed in the local shell
@@ -123,9 +140,12 @@
   - Deterministic ranking now penalizes ad links and prefers stronger text overlap with the requested item/search query.
   - Planned search queries now fall back to the original item name when an upstream plan drifts away from the request text and no longer preserves the item name verbatim.
   - Product-page option normalization now drops obvious non-option controls such as `쿠폰받기`, `수량빼기`, `수량더하기`, `문의하기`, and `신고하기`.
+  - Cart-page observation now treats `cartView.pang` as `browse` state and suppresses cart-item / ad-card candidate extraction so the agent can start a new search instead of misreading existing cart contents as active product candidates.
+  - Search-result sold-out copy no longer triggers an early out-of-stock stop before detail-page navigation.
   - Remaining live blockers are narrower but still open:
-    - Some real Coupang product pages still expose noisy option signals before the true selectable values, leading to safe `ambiguity` stops instead of add-to-cart.
-    - Real navigation on the attached browser can still intermittently fail with `Page.goto ... Timeout 30000ms exceeded`, so the full success-path validation run is still not green.
+    - Brand-constrained requests can still select a technically addable but request-mismatched product, as seen in the live `삼다수 2L 1개 담아줘` run choosing `몽베스트 생수, 2L, 6개`.
+    - The AOAI live loop can still decide to stop safely on cart-page context based on existing cart state instead of always starting a fresh search for generic requests, as seen in the post-fix `생수 2L 1개 담아줘` run.
+    - Real navigation on the attached browser can still intermittently fail with `Page.goto ... Timeout 30000ms exceeded`.
 - Direct launch attempt with the real local profile:
   - `"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --user-data-dir="$HOME/Library/Application Support/Google/Chrome" --profile-directory='Profile 1' --remote-debugging-port=9224 --no-first-run --no-default-browser-check about:blank`
   - Result: Chrome process exited immediately, `http://127.0.0.1:9224` was never reachable, so this workspace could not produce a fresh authenticated `Profile 1` CDP session automatically.
@@ -161,5 +181,5 @@
   - Related to `HOW-24`
 - `HOW-27` Backlog: `[Telegram] Add Bot API TLS trust preflight`
   - Related to `HOW-24`
-- `HOW-27` Backlog: `[Telegram] Add Bot API TLS trust preflight`
+- `HOW-28` Backlog: `[Coupang] Respect explicit brand and pack-size constraints in live product ranking`
   - Related to `HOW-24`

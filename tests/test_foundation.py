@@ -585,6 +585,68 @@ class FoundationTests(unittest.TestCase):
         self.assertEqual(observation.available_options, [])
         self.assertFalse(observation.add_to_cart_visible)
 
+    def test_observe_treats_cart_page_snapshot_as_browse_not_search_results(self) -> None:
+        class FakeBodyLocator:
+            def inner_text(self, timeout: int | None = None) -> str:
+                return "장바구니(1) 몽베스트 생수 옵션: 2L, 6개 총 1개 상품 구매하기"
+
+        class FakePage:
+            url = "https://cart.coupang.com/cartView.pang"
+
+            def title(self) -> str:
+                return "쿠팡! | 장바구니"
+
+            def locator(self, selector: str):
+                return FakeBodyLocator()
+
+            def screenshot(self, path: str, type: str):
+                return b""
+
+            def content(self) -> str:
+                return "<html></html>"
+
+        page = ExistingChromeCdpCoupangCartPage(
+            settings=PlaywrightCoupangSettings(
+                login_url="https://login.coupang.com",
+                cart_url="https://cart.coupang.com/cartView.pang",
+            ),
+            remote_debugging_port=9223,
+        )
+        fake_page = FakePage()
+        cart_snapshot = {
+            "interactive_elements": ["button:총 1개 상품 구매하기"],
+            "observed_products": [
+                {
+                    "name": "몽베스트 생수 옵션: 2L, 6개",
+                    "href": "https://www.coupang.com/vp/products/4683535861?vendorItemId=94001907703&sourceType=CART",
+                    "price_text": "5,400원",
+                    "rating_text": "4.8",
+                    "review_count_text": "405,145",
+                    "badges": [],
+                    "sold_out": False,
+                }
+            ],
+            "selected_product_hint": {
+                "name": "몽베스트 생수 옵션: 2L, 6개",
+                "href": "https://www.coupang.com/vp/products/4683535861?vendorItemId=94001907703&sourceType=CART",
+            },
+            "available_options": ["2L", "6개"],
+            "add_to_cart_visible": False,
+        }
+
+        with (
+            patch.object(ExistingChromeCdpCoupangCartPage, "_page_object", return_value=fake_page),
+            patch.object(ExistingChromeCdpCoupangCartPage, "_extract_browser_snapshot", return_value=cart_snapshot),
+            patch.object(ExistingChromeCdpCoupangCartPage, "_try_extract_cart_count", return_value=1),
+        ):
+            observation = page.observe(step_index=1)
+
+        self.assertEqual(observation.page_kind, "browse")
+        self.assertEqual(observation.observed_products, [])
+        self.assertEqual(observation.selected_product_hint, {})
+        self.assertEqual(observation.available_options, [])
+        self.assertFalse(observation.add_to_cart_visible)
+
     def test_locate_action_target_falls_back_to_product_path_when_full_href_does_not_match(self) -> None:
         class FakeLocator:
             def __init__(self, selector: str, *, visible: bool) -> None:
@@ -680,7 +742,11 @@ class FoundationTests(unittest.TestCase):
                 "쿠폰받기",
                 "수량빼기",
                 "1개",
+                "자세히 보기",
+                "베스트순",
                 "2개",
+                "도움이 돼요",
+                "2명에게 도움이 됐어요",
                 "수량더하기",
                 "문의하기",
             ]

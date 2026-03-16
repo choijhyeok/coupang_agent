@@ -234,6 +234,52 @@ class LiveBrowserAgentTests(unittest.TestCase):
         self.assertEqual(result.cart_results[0].failure_reason, CartAddFailureReason.AMBIGUITY)
         self.assertEqual(result.cart_results[0].stage.value, "option_selection")
 
+    def test_agent_selects_quantity_option_when_request_quantity_matches(self) -> None:
+        driver = SequencedBrowserDriver(
+            [
+                BrowserObservation(
+                    step_index=1,
+                    url="https://www.coupang.com/vp/products/ONION-300G",
+                    title="상품 상세",
+                    page_kind="product_page",
+                    body_text_excerpt="수량 옵션이 있습니다.",
+                    interactive_elements=["button:1개", "button:2개"],
+                    selected_product_hint={
+                        "name": "한끼 양파(대), 300g, 1개",
+                        "href": "https://www.coupang.com/vp/products/ONION-300G",
+                    },
+                    available_options=["1개", "2개"],
+                ),
+                BrowserObservation(
+                    step_index=2,
+                    url="https://www.coupang.com/vp/products/ONION-300G",
+                    title="상품 상세",
+                    page_kind="product_page",
+                    body_text_excerpt="장바구니 담기",
+                    interactive_elements=["button:장바구니 담기"],
+                    selected_product_hint={
+                        "name": "한끼 양파(대), 300g, 1개",
+                        "href": "https://www.coupang.com/vp/products/ONION-300G",
+                    },
+                    add_to_cart_visible=True,
+                ),
+            ]
+        )
+        agent = CoupangLiveBrowserShoppingAgent(
+            driver=driver,
+            model=DeterministicBrowserAgentModel(),
+        )
+
+        result = agent.run(
+            request=self._request(text="한끼 양파 300g 1개 담아줘", item_name="한끼 양파 300g"),
+            search_queries={"한끼 양파 300g": "한끼 양파 300g"},
+            operator_note="Use quantity options when they match the request.",
+            selection_brief="Select the matching quantity before add-to-cart.",
+        )
+
+        self.assertEqual(driver.executed_actions, ["select_option", "add_to_cart"])
+        self.assertTrue(result.cart_results[0].success)
+
     def test_agent_prefers_in_stock_search_result_when_sold_out_result_scores_higher(self) -> None:
         driver = SequencedBrowserDriver(
             [
@@ -295,6 +341,64 @@ class LiveBrowserAgentTests(unittest.TestCase):
         self.assertEqual(driver.executed_actions, ["click", "add_to_cart"])
         self.assertTrue(result.cart_results[0].success)
         self.assertEqual(result.selections[0].candidate.product_id, "WATER-IN-STOCK")
+
+    def test_agent_does_not_stop_on_search_page_sold_out_copy_when_in_stock_results_exist(self) -> None:
+        driver = SequencedBrowserDriver(
+            [
+                BrowserObservation(
+                    step_index=1,
+                    url="https://www.coupang.com/np/search?q=%EC%96%91%ED%8C%8C",
+                    title="검색 결과",
+                    page_kind="search_results",
+                    body_text_excerpt="한끼 양파 1개 품절임박 5 재고 있음 양파 1개",
+                    interactive_elements=["link:한끼 양파 1개", "link:재고 있음 양파 1개"],
+                    observed_products=[
+                        ObservedProduct(
+                            name="한끼 양파 1개",
+                            href="https://www.coupang.com/vp/products/ONION-1",
+                            price_text="1,260원",
+                            rating_text="4.9",
+                            review_count_text="25,924",
+                        ),
+                        ObservedProduct(
+                            name="한끼 양파 6개",
+                            href="https://www.coupang.com/vp/products/ONION-6",
+                            price_text="6,830원",
+                            rating_text="4.9",
+                            review_count_text="25,924",
+                            sold_out=True,
+                        ),
+                    ],
+                ),
+                BrowserObservation(
+                    step_index=2,
+                    url="https://www.coupang.com/vp/products/ONION-1",
+                    title="상품 상세",
+                    page_kind="product_page",
+                    body_text_excerpt="장바구니 담기",
+                    interactive_elements=["button:장바구니 담기"],
+                    selected_product_hint={
+                        "name": "한끼 양파 1개",
+                        "href": "https://www.coupang.com/vp/products/ONION-1",
+                    },
+                    add_to_cart_visible=True,
+                ),
+            ]
+        )
+        agent = CoupangLiveBrowserShoppingAgent(
+            driver=driver,
+            model=DeterministicBrowserAgentModel(),
+        )
+
+        result = agent.run(
+            request=self._request(text="양파 1개 담아줘", item_name="양파"),
+            search_queries={"양파": "양파"},
+            operator_note="Ignore sold-out copy on search result pages when an in-stock result is available.",
+            selection_brief="Continue into the best in-stock search result.",
+        )
+
+        self.assertEqual(driver.executed_actions, ["click", "add_to_cart"])
+        self.assertTrue(result.cart_results[0].success)
 
     def test_agent_prefers_requested_non_ad_product_over_better_scored_ad(self) -> None:
         driver = SequencedBrowserDriver(

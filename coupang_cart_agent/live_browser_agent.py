@@ -522,6 +522,8 @@ def _classify_blocker_hint(blocker_hint: str) -> CartAddFailureReason | None:
 def _observation_indicates_out_of_stock(observation: BrowserObservation) -> bool:
     if observation.selected_product_hint.get("sold_out"):
         return True
+    if observation.page_kind == "search_results":
+        return False
     if any(product.sold_out for product in observation.observed_products):
         available_products = [product for product in observation.observed_products if not product.sold_out]
         if not available_products:
@@ -643,6 +645,17 @@ def _text_match_score(product: ObservedProduct, preferred_terms: list[str]) -> i
 
 
 def _match_option(item: RequestedItem, available_options: list[str]) -> str | None:
+    quantity_patterns = (
+        f"{item.quantity}개",
+        f"{item.quantity} 개",
+        f"{item.quantity}입",
+        f"{item.quantity} 입",
+    )
+    for option in available_options:
+        lowered = option.lower()
+        if any(pattern in lowered for pattern in quantity_patterns):
+            return option
+
     lowered_constraints = [constraint.lower() for constraint in item.constraints]
     for option in available_options:
         lowered = option.lower()

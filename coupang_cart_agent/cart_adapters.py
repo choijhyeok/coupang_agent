@@ -316,7 +316,12 @@ class PlaywrightCoupangCartPage:
         selected_product_hint = dict(selected_hint) if isinstance(selected_hint, dict) else {}
         available_options = self._normalize_available_options(snapshot.get("available_options", []))
         add_to_cart_visible = bool(snapshot.get("add_to_cart_visible", False))
-        if page_kind == "search_results":
+        if self._is_cart_page_url(page.url):
+            observed_products = []
+            selected_product_hint = {}
+            available_options = []
+            add_to_cart_visible = False
+        elif page_kind == "search_results":
             selected_product_hint = {}
             available_options = []
             add_to_cart_visible = False
@@ -566,21 +571,39 @@ class PlaywrightCoupangCartPage:
                   const priceMatch = bodyText.match(/([0-9][0-9,]{2,})\\s*원?/);
                   const ratingMatch = bodyText.match(/([0-5](?:\\.[0-9])?)/);
                   const reviewMatch = bodyText.match(/(?:리뷰|후기|평점)\\s*\\(?([0-9][0-9,]*)\\)?/);
+                  const optionSelectors = [
+                    "[class*='option'] button",
+                    "[class*='option'] label",
+                    "[class*='option'] [role='option']",
+                    "[class*='option'] option",
+                    "[class*='quantity'] button",
+                    "[class*='count'] button",
+                    "[class*='count'] label",
+                    "[class*='order'] button",
+                    "[class*='buy'] button",
+                    "select option",
+                  ];
+                  const optionCandidates = !isProductPage
+                    ? []
+                    : Array.from(document.querySelectorAll(optionSelectors.join(",")));
                   const availableOptions = !isProductPage
                     ? []
-                    : Array.from(document.querySelectorAll("button, option, [role='option'], label"))
+                    : (optionCandidates.length ? optionCandidates : Array.from(
+                        document.querySelectorAll("button, option, [role='option'], label")
+                      ))
                         .filter((element) => visible(element))
                         .map((element) => normalize(element.innerText || element.textContent || element.getAttribute('aria-label')))
                         .filter((text) => text && text.length <= 80)
                         .filter((text) => !/장바구니|구매|검색|로그인|마이쿠팡/.test(text))
                         .slice(0, 20);
+                  const documentText = normalize(document.documentElement ? document.documentElement.textContent : bodyText);
                   const addToCartVisible = Array.from(
                     document.querySelectorAll("button, [role='button']")
                   ).some((element) => {
                     if (!visible(element)) return false;
                     const text = normalize(element.innerText || element.textContent || element.getAttribute('aria-label'));
                     return /장바구니\\s*담기|카트에\\s*담기|담기/.test(text);
-                  }) || /장바구니\\s*담기/.test(bodyText);
+                  }) || /장바구니\\s*담기/.test(bodyText) || (isProductPage && /장바구니\\s*담기/.test(documentText));
                   return {
                     interactive_elements: interactiveElements,
                     observed_products: observedProducts,
@@ -631,6 +654,8 @@ class PlaywrightCoupangCartPage:
     ) -> str:
         if blocker_hint:
             return "session_blocked"
+        if self._is_cart_page_url(url):
+            return "browse"
         if "/vp/products/" in url:
             return "product_page"
         if observed_products or "search" in url:
@@ -638,6 +663,11 @@ class PlaywrightCoupangCartPage:
         if add_to_cart_visible:
             return "product_page"
         return "browse"
+
+    @staticmethod
+    def _is_cart_page_url(url: str) -> bool:
+        lowered = url.lower()
+        return "cart.coupang.com/cartview.pang" in lowered or "/cartview.pang" in lowered
 
     @staticmethod
     def _normalize_available_options(raw_options) -> list[str]:
@@ -649,6 +679,11 @@ class PlaywrightCoupangCartPage:
             "절약 금액 기준",
             "상품정보 더보기",
             "상품리뷰 운영원칙",
+            "자세히 보기",
+            "베스트순",
+            "최신순",
+            "도움이 돼요",
+            "도움이 되었어요",
             "문의하기",
             "신고하기",
             "더보기",
@@ -659,6 +694,10 @@ class PlaywrightCoupangCartPage:
             if not text:
                 continue
             if any(pattern in text for pattern in ignored_patterns):
+                continue
+            if re.search(r"\d+명에게 도움이 됐어요", text):
+                continue
+            if re.search(r"^(리뷰|상품평|평점)\b", text):
                 continue
             if text not in normalized:
                 normalized.append(text)
