@@ -57,6 +57,9 @@
   - `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=existing_cdp COUPANG_CHROME_REMOTE_DEBUGGING_PORT=9226 uv run python -m coupang_cart_agent cart-live-inspect-session`
   - Result on 2026-03-16: reachable CDP session attached, navigated to `https://cart.coupang.com/cartView.pang`, and observed `로그인하기` with `cart_count=0`; output now classifies the page as `session_blocked` with blocker hint `Attach mode requires an operator-prepared logged-in Coupang session.`
 - [ ] Telegram request -> agent -> Coupang cart -> Telegram reply evidence 1건
+- [x] Telegram request -> agent -> Coupang cart -> Telegram reply failure-path evidence 1건
+  - `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=existing_cdp COUPANG_CHROME_REMOTE_DEBUGGING_PORT=9226 uv run python -m coupang_cart_agent integration-live-request '양파 1개 담아줘' --user-id telegram:8201584878 --chat-id 8201584878`
+  - Result on 2026-03-16: request reached LangGraph live workflow, browser attach reached a structured Coupang `session/login_required` failure, persistence completed, and notification send then failed at `notify` because Telegram Bot API TLS verification failed in the local shell
 - [x] Branch / commit / publish status recorded
   - Branch: `wowogur12/how-24-coupang-aoai-live-web-shopping-agent-for-real-time-search`
   - Latest local commit: `83b03fc`
@@ -95,6 +98,9 @@
 - Cookie comparison note:
   - Source profile DB still contains Coupang cookies including `.coupang.com|member_srl` and `.coupang.com|sid`.
   - The long-running `/tmp/how24-open-profile/Profile 1/Cookies` snapshot did not show `member_srl`, reinforcing that “cookie presence somewhere on disk” is not enough to guarantee an attachable logged-in cart session.
+- Telegram live delivery environment note on 2026-03-16:
+  - Plain `urllib.request.urlopen('https://api.telegram.org')` from this shell fails with `CERTIFICATE_VERIFY_FAILED` / `self-signed certificate in certificate chain`.
+  - `integration-live-request` against chat `8201584878` therefore reached `failed_stage=notify` after the structured Coupang session blocker, not because of a workflow bug but because the local runtime could not establish a trusted TLS connection to Telegram Bot API.
 - Direct launch attempt with the real local profile:
   - `"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --user-data-dir="$HOME/Library/Application Support/Google/Chrome" --profile-directory='Profile 1' --remote-debugging-port=9224 --no-first-run --no-default-browser-check about:blank`
   - Result: Chrome process exited immediately, `http://127.0.0.1:9224` was never reachable, so this workspace could not produce a fresh authenticated `Profile 1` CDP session automatically.
@@ -127,4 +133,6 @@
 - `HOW-25` Backlog: `[Coupang] Allowlist LangGraph checkpoint enum types for persisted live workflow state`
   - Related to `HOW-24`
 - `HOW-26` Backlog: `[Coupang] Add operator diagnostics for validating an attachable logged-in Chrome session`
+  - Related to `HOW-24`
+- `HOW-27` Backlog: `[Telegram] Add Bot API TLS trust preflight`
   - Related to `HOW-24`
