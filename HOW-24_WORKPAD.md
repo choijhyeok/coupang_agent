@@ -90,8 +90,8 @@
   - Follow-up rerun after Telegram truststore hardening: result still keeps `failed_stage=session`, but `notification_payload.stage=session` and the workflow no longer fails at `notify`, confirming the Telegram reply path can succeed in this shell once system trust is used
 - [x] Branch / commit / publish status recorded
   - Branch: `wowogur12/how-24-coupang-aoai-live-web-shopping-agent-for-real-time-search`
-  - Latest local commit: `cc52315`
-  - Published remote commit: `cc52315`
+  - Latest local commit: `f2ffa6a`
+  - Published remote commit: `f2ffa6a`
   - Push status:
     - Success earlier: `git push -u origin wowogur12/how-24-coupang-aoai-live-web-shopping-agent-for-real-time-search`
     - HTTPS push attempt failed on 2026-03-16:
@@ -99,7 +99,7 @@
       - Result: `remote: Permission to choijhyeok/coupang_agent.git denied to choijhyeok. fatal: unable to access 'https://github.com/choijhyeok/coupang_agent.git/': The requested URL returned error: 403`
     - Publish workaround succeeded:
       - Command: `GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/github_ssh_known_hosts -o IdentitiesOnly=yes -i ~/.ssh/choijhyeok-GitHub -p 443' git push ssh://git@ssh.github.com:443/choijhyeok/coupang_agent.git HEAD:refs/heads/wowogur12/how-24-coupang-aoai-live-web-shopping-agent-for-real-time-search`
-      - Result: latest retries pushed through `cc52315`
+      - Result: latest retries pushed through `f2ffa6a`
   - PR: `https://github.com/choijhyeok/coupang_agent/pull/15`
   - PR review sweep on 2026-03-16:
     - Public PR conversation is visible.
