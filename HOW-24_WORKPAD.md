@@ -57,8 +57,8 @@
 - [ ] Telegram request -> agent -> Coupang cart -> Telegram reply evidence 1건
 - [x] Branch / commit / publish status recorded
   - Branch: `wowogur12/how-24-coupang-aoai-live-web-shopping-agent-for-real-time-search`
-  - Latest local commit: `3401e8c`
-  - Published remote commit: `3401e8c`
+  - Latest local commit: `83b03fc`
+  - Published remote commit: `83b03fc`
   - Push status:
     - Success earlier: `git push -u origin wowogur12/how-24-coupang-aoai-live-web-shopping-agent-for-real-time-search`
     - HTTPS push attempt failed on 2026-03-16:
@@ -66,8 +66,11 @@
       - Result: `remote: Permission to choijhyeok/coupang_agent.git denied to choijhyeok. fatal: unable to access 'https://github.com/choijhyeok/coupang_agent.git/': The requested URL returned error: 403`
     - Publish workaround succeeded:
       - Command: `GIT_SSH_COMMAND='ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/github_ssh_known_hosts -o IdentitiesOnly=yes -i ~/.ssh/choijhyeok-GitHub -p 443' git push ssh://git@ssh.github.com:443/choijhyeok/coupang_agent.git HEAD:refs/heads/wowogur12/how-24-coupang-aoai-live-web-shopping-agent-for-real-time-search`
-      - Result: latest retries pushed through `3401e8c`
+      - Result: latest retries pushed through `83b03fc`
   - PR: `https://github.com/choijhyeok/coupang_agent/pull/15`
+  - PR review sweep on 2026-03-16:
+    - Public PR conversation is visible.
+    - No review submissions or actionable review comments are present at this time.
 
 ### Notes / Blockers
 
