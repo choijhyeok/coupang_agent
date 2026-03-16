@@ -108,6 +108,9 @@
   - PR review sweep on 2026-03-16 after latest publish:
     - Public PR conversation is visible.
     - No review submissions or actionable review comments are present at this time.
+  - Follow-up review check on 2026-03-16:
+    - `gh pr view 15 --json number,state,title,reviewDecision,comments,reviews,headRefName,commits`
+    - Result: blocked by the local GitHub token policy (`Your network administrator has blocked access to GitHub except for the 'KT Corp. - EMU' enterprises.`), so no newer CLI-backed review metadata could be fetched from this shell.
 
 ### Notes / Blockers
 
