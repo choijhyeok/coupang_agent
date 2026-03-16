@@ -6,7 +6,7 @@
 - Branch: `how-30-post-action-cart-verification`
 - Workspace: `/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-30`
 - Issue type: feature module
-- Linear state: `Todo`
+- Linear state: `In Progress`
 
 ### Plan
 
@@ -58,7 +58,7 @@
   - `tests/test_cart_verification.py`
   - `tests/test_live_workflow_verification.py`
 - Branch: `how-30-post-action-cart-verification`
-- Commit: `e0dfa11243e59d9d6cf9abfe2f68e53c0c1233c4`
+- Commit: `600c1c2bc26f5e8198fd53193fccd393171dff55`
 - Push: `git push -u origin how-30-post-action-cart-verification` -> success
 - PR: `https://github.com/choijhyeok/coupang_agent/pull/17`
 
