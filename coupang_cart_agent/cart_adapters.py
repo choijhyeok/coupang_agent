@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import queue
+import re
 import shutil
 import subprocess
 import threading
 import time
+import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
-import re
 
 from playwright.sync_api import Browser, BrowserContext, Page, Playwright, TimeoutError, sync_playwright
 
@@ -306,16 +307,25 @@ class PlaywrightCoupangCartPage:
             for raw in snapshot.get("observed_products", [])
             if str(raw.get("name", "")).strip()
         ]
+        page_kind = self._page_kind(
+            url=page.url,
+            observed_products=observed_products,
+            add_to_cart_visible=bool(snapshot.get("add_to_cart_visible", False)),
+            blocker_hint=blocker_hint,
+        )
+        selected_product_hint = dict(selected_hint) if isinstance(selected_hint, dict) else {}
+        available_options = self._normalize_available_options(snapshot.get("available_options", []))
+        add_to_cart_visible = bool(snapshot.get("add_to_cart_visible", False))
+        if page_kind == "search_results":
+            selected_product_hint = {}
+            available_options = []
+            add_to_cart_visible = False
+
         return BrowserObservation(
             step_index=step_index,
             url=page.url,
             title=self._safe_title(page),
-            page_kind=self._page_kind(
-                url=page.url,
-                observed_products=observed_products,
-                add_to_cart_visible=bool(snapshot.get("add_to_cart_visible", False)),
-                blocker_hint=blocker_hint,
-            ),
+            page_kind=page_kind,
             body_text_excerpt=body_text[:2000],
             accessibility_lines=[str(item) for item in snapshot.get("interactive_elements", [])[:25]],
             html_excerpt=self._safe_html_excerpt(page),
@@ -323,9 +333,9 @@ class PlaywrightCoupangCartPage:
             screenshot_base64=encode_screenshot_bytes(screenshot_bytes),
             interactive_elements=[str(item) for item in snapshot.get("interactive_elements", [])[:25]],
             observed_products=observed_products[:8],
-            selected_product_hint=dict(selected_hint) if isinstance(selected_hint, dict) else {},
-            available_options=[str(item) for item in snapshot.get("available_options", [])[:12]],
-            add_to_cart_visible=bool(snapshot.get("add_to_cart_visible", False)),
+            selected_product_hint=selected_product_hint,
+            available_options=available_options,
+            add_to_cart_visible=add_to_cart_visible,
             blocker_hint=blocker_hint,
             cart_count=self._try_extract_cart_count(page),
             last_action_summary=last_action_summary,
@@ -340,6 +350,10 @@ class PlaywrightCoupangCartPage:
                 raise UIElementNotFoundError("Search action did not include a query.")
             self._perform_search(query)
             return f"Searched for {query}."
+        if action.action_type == BrowserAgentActionType.CLICK and action.target_href:
+            page.goto(action.target_href, wait_until="domcontentloaded")
+            page.wait_for_timeout(1500)
+            return f"Opened {action.target_href}."
         if action.action_type in (BrowserAgentActionType.CLICK, BrowserAgentActionType.SELECT_OPTION):
             locator = self._locate_action_target(
                 target_text=action.target_text or action.value,
@@ -442,10 +456,17 @@ class PlaywrightCoupangCartPage:
                 lambda: page.locator("input"),
             )
         )
-        if locator is None:
-            raise UIElementNotFoundError("Search input was not found.")
-        locator.fill(query)
-        locator.press("Enter")
+        if locator is not None:
+            locator.fill(query)
+            locator.press("Enter")
+            page.wait_for_timeout(2000)
+            return
+
+        encoded_query = urllib.parse.quote(query)
+        page.goto(
+            f"https://www.coupang.com/np/search?component=&q={encoded_query}",
+            wait_until="domcontentloaded",
+        )
         page.wait_for_timeout(2000)
 
     def _locate_action_target(
@@ -458,8 +479,9 @@ class PlaywrightCoupangCartPage:
         page = self._page_object()
         factories: list[Callable[[], object]] = []
         if target_href:
-            href_text = target_href.replace('"', '\\"')
-            factories.append(lambda: page.locator(f'a[href*="{href_text}"]'))
+            for href_fragment in self._href_match_fragments(target_href):
+                escaped_fragment = href_fragment.replace('"', '\\"')
+                factories.append(lambda fragment=escaped_fragment: page.locator(f'a[href*="{fragment}"]'))
         if target_role and target_text:
             factories.append(lambda: page.get_by_role(target_role, name=target_text, exact=False))
         if target_text:
@@ -473,6 +495,18 @@ class PlaywrightCoupangCartPage:
                 )
             )
         return self._first_locator(tuple(factories))
+
+    @staticmethod
+    def _href_match_fragments(target_href: str) -> list[str]:
+        fragments: list[str] = []
+        for candidate in (
+            target_href,
+            urllib.parse.urlparse(target_href).path,
+        ):
+            normalized = (candidate or "").strip()
+            if normalized and normalized not in fragments:
+                fragments.append(normalized)
+        return fragments
 
     def _extract_browser_snapshot(self, page: Page) -> dict[str, object]:
         try:
@@ -525,28 +559,34 @@ class PlaywrightCoupangCartPage:
                     seenHref.add(href);
                     if (observedProducts.length >= 8) break;
                   }
+                  const currentUrl = window.location.href;
+                  const isProductPage = /\\/vp\\/products\\//.test(currentUrl);
                   const bodyText = normalize(document.body ? document.body.innerText : '');
                   const heading = normalize((document.querySelector('h1') || {}).innerText || '');
                   const priceMatch = bodyText.match(/([0-9][0-9,]{2,})\\s*원?/);
                   const ratingMatch = bodyText.match(/([0-5](?:\\.[0-9])?)/);
                   const reviewMatch = bodyText.match(/(?:리뷰|후기|평점)\\s*\\(?([0-9][0-9,]*)\\)?/);
-                  const availableOptions = Array.from(
-                    document.querySelectorAll("button, option, [role='option'], label")
-                  )
-                    .filter((element) => visible(element))
-                    .map((element) => normalize(element.innerText || element.textContent || element.getAttribute('aria-label')))
-                    .filter((text) => text && text.length <= 80)
-                    .filter((text) => !/장바구니|구매|검색|로그인|마이쿠팡/.test(text))
-                    .slice(0, 12);
+                  const availableOptions = !isProductPage
+                    ? []
+                    : Array.from(document.querySelectorAll("button, option, [role='option'], label"))
+                        .filter((element) => visible(element))
+                        .map((element) => normalize(element.innerText || element.textContent || element.getAttribute('aria-label')))
+                        .filter((text) => text && text.length <= 80)
+                        .filter((text) => !/장바구니|구매|검색|로그인|마이쿠팡/.test(text))
+                        .slice(0, 20);
                   const addToCartVisible = Array.from(
-                    document.querySelectorAll("button, a, [role='button']")
-                  ).some((element) => visible(element) && /장바구니/.test(normalize(element.innerText || element.textContent || element.getAttribute('aria-label'))));
+                    document.querySelectorAll("button, [role='button']")
+                  ).some((element) => {
+                    if (!visible(element)) return false;
+                    const text = normalize(element.innerText || element.textContent || element.getAttribute('aria-label'));
+                    return /장바구니\\s*담기|카트에\\s*담기|담기/.test(text);
+                  }) || /장바구니\\s*담기/.test(bodyText);
                   return {
                     interactive_elements: interactiveElements,
                     observed_products: observedProducts,
-                    selected_product_hint: heading ? {
+                    selected_product_hint: isProductPage && heading ? {
                       name: heading,
-                      href: window.location.href,
+                      href: currentUrl,
                       price_text: priceMatch ? priceMatch[1] : null,
                       rating_text: ratingMatch ? ratingMatch[1] : null,
                       review_count_text: reviewMatch ? reviewMatch[1] : null,
@@ -591,11 +631,40 @@ class PlaywrightCoupangCartPage:
     ) -> str:
         if blocker_hint:
             return "session_blocked"
-        if add_to_cart_visible or "/vp/products/" in url:
+        if "/vp/products/" in url:
             return "product_page"
         if observed_products or "search" in url:
             return "search_results"
+        if add_to_cart_visible:
+            return "product_page"
         return "browse"
+
+    @staticmethod
+    def _normalize_available_options(raw_options) -> list[str]:
+        ignored_patterns = (
+            "쿠폰받기",
+            "수량빼기",
+            "수량더하기",
+            "와우 멤버십으로 할인받기",
+            "절약 금액 기준",
+            "상품정보 더보기",
+            "상품리뷰 운영원칙",
+            "문의하기",
+            "신고하기",
+            "더보기",
+        )
+        normalized: list[str] = []
+        for item in raw_options:
+            text = str(item).strip()
+            if not text:
+                continue
+            if any(pattern in text for pattern in ignored_patterns):
+                continue
+            if text not in normalized:
+                normalized.append(text)
+            if len(normalized) >= 12:
+                break
+        return normalized
 
     def _infer_session_blocker_hint(self, *, page: Page, body_text: str) -> str | None:
         if self._is_access_denied(page):

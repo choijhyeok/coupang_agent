@@ -179,7 +179,10 @@ class DeterministicBrowserAgentModel:
             )
 
         if observation.page_kind == "search_results" and observation.observed_products:
-            chosen = _rank_observed_products(observation.observed_products)[0]
+            chosen = _rank_observed_products(
+                observation.observed_products,
+                preferred_terms=[context.item.name, context.search_query],
+            )[0]
             return BrowserAgentAction(
                 action_type=BrowserAgentActionType.CLICK,
                 target_text=chosen.name,
@@ -234,7 +237,7 @@ class CoupangLiveBrowserShoppingAgent:
         for item in request.items:
             selected_product: SelectedProduct | None = None
             selected_options: dict[str, str] = {}
-            search_query = search_queries.get(item.name, item.name).strip() or item.name
+            search_query = _coerce_search_query(item, search_queries.get(item.name, item.name))
 
             for step_index in range(1, self._max_steps_per_item + 1):
                 observation = self._driver.observe(
@@ -600,17 +603,43 @@ def _pick_observed_product(
     return ObservedProduct(name=fallback_name, href=observation.url)
 
 
-def _rank_observed_products(products: list[ObservedProduct]) -> list[ObservedProduct]:
+def _rank_observed_products(
+    products: list[ObservedProduct],
+    *,
+    preferred_terms: list[str] | None = None,
+) -> list[ObservedProduct]:
     return sorted(
         products,
         key=lambda product: (
             0 if product.sold_out else 1,
+            0 if _is_ad_product(product) else 1,
+            _text_match_score(product, preferred_terms or []),
             _rating_from_text(product.rating_text),
             _review_count_from_text(product.review_count_text),
             -_price_from_text(product.price_text),
         ),
         reverse=True,
     )
+
+
+def _is_ad_product(product: ObservedProduct) -> bool:
+    lowered_name = product.name.lower()
+    lowered_href = (product.href or "").lower()
+    return " ad" in lowered_name or lowered_name.endswith("ad") or "sourcetype=srp_product_ads" in lowered_href
+
+
+def _text_match_score(product: ObservedProduct, preferred_terms: list[str]) -> int:
+    lowered_name = product.name.lower()
+    score = 0
+    for term in preferred_terms:
+        normalized = term.lower().strip()
+        if not normalized:
+            continue
+        if normalized in lowered_name:
+            score += 100
+        tokens = [token for token in re.split(r"[^0-9a-z가-힣]+", normalized) if token]
+        score += sum(1 for token in tokens if token in lowered_name)
+    return score
 
 
 def _match_option(item: RequestedItem, available_options: list[str]) -> str | None:
@@ -620,6 +649,18 @@ def _match_option(item: RequestedItem, available_options: list[str]) -> str | No
         if any(constraint in lowered for constraint in lowered_constraints):
             return option
     return available_options[0] if len(available_options) == 1 else None
+
+
+def _coerce_search_query(item: RequestedItem, raw_query: str | None) -> str:
+    item_name = item.name.strip()
+    candidate = (raw_query or "").strip()
+    if not candidate:
+        return item_name
+    normalized_item = re.sub(r"\s+", " ", item_name.lower())
+    normalized_candidate = re.sub(r"\s+", " ", candidate.lower())
+    if normalized_item and normalized_item not in normalized_candidate:
+        return item_name
+    return candidate
 
 
 def _price_from_text(value: str | None) -> int:

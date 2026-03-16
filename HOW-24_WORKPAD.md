@@ -50,6 +50,9 @@
 - [ ] Access Denied or security challenge blocker evidence 1건
 - [x] Option ambiguity or out-of-stock safe failure evidence 1건
   - Automated evidence: `tests.test_live_browser_agent.LiveBrowserAgentTests.test_agent_stops_on_option_ambiguity`
+  - Live evidence on 2026-03-16:
+    - `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=browser_use COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Default' uv run python -m coupang_cart_agent integration-live-request '한끼 양파 300g 1개 담아줘' --user-id telegram:8201584878 --chat-id 8201584878`
+    - Result: attached logged-in `Default` profile searched from request text, navigated into real product detail `6202345578`, and then stopped safely with `failed_stage=option_selection` / `failure_reason=ambiguity` because extracted page options were still noisy and did not map cleanly to the request.
 - [x] Fresh live login/session blocker evidence 1건
   - `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=existing_cdp COUPANG_CHROME_REMOTE_DEBUGGING_PORT=9223 uv run python -m coupang_cart_agent integration-live-request '양파 1개 담아줘' --user-id telegram:8201584878 --chat-id 8201584878`
   - Result: structured failure with `failed_stage=session`, `failure_reason=login_required`, and Telegram failure notification delivered to chat `8201584878`
@@ -70,8 +73,8 @@
   - Follow-up rerun after Telegram truststore hardening: result still keeps `failed_stage=session`, but `notification_payload.stage=session` and the workflow no longer fails at `notify`, confirming the Telegram reply path can succeed in this shell once system trust is used
 - [x] Branch / commit / publish status recorded
   - Branch: `wowogur12/how-24-coupang-aoai-live-web-shopping-agent-for-real-time-search`
-  - Latest local commit: `16b62c2`
-  - Published remote commit: `16b62c2`
+  - Latest local commit before this turn: `96fdbf8`
+  - Published remote commit before this turn: `96fdbf8`
   - Push status:
     - Success earlier: `git push -u origin wowogur12/how-24-coupang-aoai-live-web-shopping-agent-for-real-time-search`
     - HTTPS push attempt failed on 2026-03-16:
@@ -113,6 +116,16 @@
 - Workflow failure-reporting hardening on 2026-03-16:
   - Notification delivery failures no longer overwrite an existing upstream cart/browser failure stage in the live workflow state.
   - This keeps DB and CLI output aligned with the true shopping blocker even when Telegram delivery fails later in the run.
+- Additional live browser-agent hardening on 2026-03-16:
+  - Search now falls back to a direct Coupang search URL when the attached page starts from cart and no visible search box is available.
+  - Search-result clicks now use direct `page.goto(target_href)` for product links, avoiding the attached-browser case where a locator click left the current page on search results.
+  - Search-result observation now suppresses false product-page signals from header/cart/filter UI, so search pages no longer become `option_selection` just because they contain generic `장바구니` or filter text.
+  - Deterministic ranking now penalizes ad links and prefers stronger text overlap with the requested item/search query.
+  - Planned search queries now fall back to the original item name when an upstream plan drifts away from the request text and no longer preserves the item name verbatim.
+  - Product-page option normalization now drops obvious non-option controls such as `쿠폰받기`, `수량빼기`, `수량더하기`, `문의하기`, and `신고하기`.
+  - Remaining live blockers are narrower but still open:
+    - Some real Coupang product pages still expose noisy option signals before the true selectable values, leading to safe `ambiguity` stops instead of add-to-cart.
+    - Real navigation on the attached browser can still intermittently fail with `Page.goto ... Timeout 30000ms exceeded`, so the full success-path validation run is still not green.
 - Direct launch attempt with the real local profile:
   - `"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --user-data-dir="$HOME/Library/Application Support/Google/Chrome" --profile-directory='Profile 1' --remote-debugging-port=9224 --no-first-run --no-default-browser-check about:blank`
   - Result: Chrome process exited immediately, `http://127.0.0.1:9224` was never reachable, so this workspace could not produce a fresh authenticated `Profile 1` CDP session automatically.
