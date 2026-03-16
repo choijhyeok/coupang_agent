@@ -279,6 +279,8 @@ class PlaywrightCoupangCartPage:
         except Exception as exc:
             blocker_hint = str(exc)
         body_text = self._safe_inner_text(page)
+        if blocker_hint is None:
+            blocker_hint = self._infer_session_blocker_hint(page=page, body_text=body_text)
         snapshot = self._extract_browser_snapshot(page)
         screenshot_dir = Path(".artifacts/browser-agent")
         screenshot_dir.mkdir(parents=True, exist_ok=True)
@@ -594,6 +596,26 @@ class PlaywrightCoupangCartPage:
         if observed_products or "search" in url:
             return "search_results"
         return "browse"
+
+    def _infer_session_blocker_hint(self, *, page: Page, body_text: str) -> str | None:
+        if self._is_access_denied(page):
+            return "Attach mode was blocked by Coupang Access Denied. Use an operator-approved logged-in Chrome session."
+        if self._is_security_challenge(page):
+            return "Attach mode encountered a Coupang security challenge. Operator re-authentication is required."
+        if self._is_login_page(page):
+            return "Attach mode reached the Coupang login page. Prepare a logged-in Chrome session before running automation."
+        lowered_url = page.url.lower()
+        login_prompt_tokens = (
+            "로그인을 하시면",
+            "로그인하기",
+            "로그인이 필요합니다",
+        )
+        if (
+            "cart.coupang.com/cartview.pang" in lowered_url
+            or "/cartview.pang" in lowered_url
+        ) and any(token in body_text for token in login_prompt_tokens):
+            return "Attach mode requires an operator-prepared logged-in Coupang session."
+        return None
 
     def _try_extract_cart_count(self, page: Page) -> int | None:
         try:

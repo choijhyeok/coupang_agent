@@ -31,10 +31,10 @@
 
 - [x] Focused automated tests
   - `uv run python -m unittest tests.test_foundation tests.test_live_browser_agent tests.test_live_workflow`
-  - Result: `Ran 33 tests ... OK`
+  - Result: `Ran 34 tests ... OK`
 - [x] Full automated regression relevant to touched modules
   - `uv run python -m unittest discover -s tests`
-  - Result: `Ran 69 tests ... OK`
+  - Result: `Ran 70 tests ... OK`
 - [x] Bytecode / import sanity
   - `uv run python -m compileall coupang_cart_agent tests`
   - Result: completed successfully
@@ -55,7 +55,7 @@
   - `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=existing_cdp COUPANG_CHROME_REMOTE_DEBUGGING_PORT=9223 uv run python -m coupang_cart_agent cart-live-inspect-session`
   - Result on 2026-03-16 after worker-thread hardening: returns structured `LoginFailedError` without teardown traceback or `sync-in-async` Playwright failure; current blocker is now the expected “no reachable logged-in operator CDP session”
   - `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=existing_cdp COUPANG_CHROME_REMOTE_DEBUGGING_PORT=9226 uv run python -m coupang_cart_agent cart-live-inspect-session`
-  - Result on 2026-03-16: reachable CDP session attached, navigated to `https://cart.coupang.com/cartView.pang`, and observed `로그인하기` with `cart_count=0`; failure remained structured `LoginRequiredError`, confirming the current blocker is Coupang session auth rather than CDP connectivity
+  - Result on 2026-03-16: reachable CDP session attached, navigated to `https://cart.coupang.com/cartView.pang`, and observed `로그인하기` with `cart_count=0`; output now classifies the page as `session_blocked` with blocker hint `Attach mode requires an operator-prepared logged-in Coupang session.`
 - [ ] Telegram request -> agent -> Coupang cart -> Telegram reply evidence 1건
 - [x] Branch / commit / publish status recorded
   - Branch: `wowogur12/how-24-coupang-aoai-live-web-shopping-agent-for-real-time-search`
@@ -88,7 +88,7 @@
 - Additional CDP diagnosis on 2026-03-16:
   - Local Chrome instance at `http://127.0.0.1:9226/json/version` was reachable and exposed multiple tabs.
   - `existing_cdp` attach against `9226` now works with clean structured output after worker-thread hardening.
-  - The attached cart page still rendered the unauthenticated state (`로그인을 하시면, 장바구니에 보관된 상품을 확인하실 수 있습니다.`), so the remaining blocker is a non-authenticated Coupang session in that Chrome profile.
+  - The attached cart page still rendered the unauthenticated state (`로그인을 하시면, 장바구니에 보관된 상품을 확인하실 수 있습니다.`), and the observation now records that state as `session_blocked`, so the remaining blocker is a non-authenticated Coupang session in that Chrome profile.
 - Direct launch attempt with the real local profile:
   - `"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --user-data-dir="$HOME/Library/Application Support/Google/Chrome" --profile-directory='Profile 1' --remote-debugging-port=9224 --no-first-run --no-default-browser-check about:blank`
   - Result: Chrome process exited immediately, `http://127.0.0.1:9224` was never reachable, so this workspace could not produce a fresh authenticated `Profile 1` CDP session automatically.

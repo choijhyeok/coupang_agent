@@ -424,6 +424,55 @@ class FoundationTests(unittest.TestCase):
         self.assertNotEqual(worker_thread_ids[0], threading.get_ident())
         page.close()
 
+    def test_observe_classifies_cart_login_prompt_as_session_blocked(self) -> None:
+        class FakeLocator:
+            def __init__(self, text: str) -> None:
+                self._text = text
+
+            def inner_text(self, timeout: int | None = None) -> str:
+                return self._text
+
+        class FakePage:
+            url = "https://cart.coupang.com/cartView.pang"
+
+            def title(self) -> str:
+                return "쿠팡! | 장바구니"
+
+            def locator(self, selector: str):
+                self.last_selector = selector
+                return FakeLocator(
+                    "장바구니에 담은 상품이 없습니다.\n로그인을 하시면, 장바구니에 보관된 상품을 확인하실 수 있습니다.\n로그인하기"
+                )
+
+            def screenshot(self, path: str, type: str):
+                return b""
+
+            def content(self) -> str:
+                return "<html></html>"
+
+            def evaluate(self, script: str):
+                return {
+                    "interactive_elements": ["a:로그인하기"],
+                    "observed_products": [],
+                    "selected_product_hint": {},
+                    "available_options": [],
+                    "add_to_cart_visible": False,
+                }
+
+        page = ExistingChromeCdpCoupangCartPage(
+            settings=PlaywrightCoupangSettings(
+                login_url="https://login.coupang.com",
+                cart_url="https://cart.coupang.com/cartView.pang",
+            ),
+            remote_debugging_port=9223,
+        )
+        fake_page = FakePage()
+        with patch.object(ExistingChromeCdpCoupangCartPage, "_page_object", return_value=fake_page):
+            observation = page.observe(step_index=1)
+
+        self.assertEqual(observation.page_kind, "session_blocked")
+        self.assertIn("logged-in Coupang session", observation.blocker_hint or "")
+
     def test_contract_import_example(self) -> None:
         request = ShoppingRequest(
             user_id="telegram:1",
