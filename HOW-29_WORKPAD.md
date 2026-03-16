@@ -6,6 +6,7 @@
 - Branch: `codex/how-29-brand-pack-constraints`
 - Workspace: `/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-29`
 - Issue type: feature module
+- Linear state: `Human Review`
 
 ### Plan
 
@@ -53,6 +54,13 @@
 - Search-query planning and the live search adapter now reuse the same explicit-intent-aware query builder so pack-count tokens removed from cart quantity parsing are still searched.
 - Live validation used a captured production-shaped mismatch fixture because `COUPANG_SEARCH_ENDPOINT` is not configured in this workspace. The executed path still used real Azure OpenAI planning, LangGraph state persistence, PostgreSQL operational storage, and Telegram delivery.
 - No follow-up issue was created.
+
+### Review Sweep
+
+- PR: `https://github.com/choijhyeok/coupang_agent/pull/16`
+- PR comments: none
+- PR reviews: none
+- PR checks: none reported on the branch
 
 ### Follow-up Issues Created
 
