@@ -10,6 +10,7 @@ from coupang_cart_agent.contracts import (
     BrowserObservation,
     CartAddFailureReason,
     IntakeMode,
+    ObservedCartItem,
     ObservedProduct,
     RequestSession,
     RequestedItem,
@@ -59,6 +60,29 @@ class SequencedBrowserDriver:
         index = min(self._observe_calls, len(self._observations) - 1)
         self._observe_calls += 1
         return self._observations[index]
+
+    def observe_cart_verification(self) -> BrowserObservation:
+        source = self._observations[-1]
+        selected_name = str(source.selected_product_hint.get("name") or source.body_text_excerpt or "검증 상품").strip()
+        quantity = self._cart_snapshots[-1].item_count or 1
+        return BrowserObservation(
+            step_index=0,
+            url="https://cart.coupang.com/cartView.pang",
+            title="쿠팡 장바구니",
+            page_kind="browse",
+            body_text_excerpt=f"{selected_name} 수량 {quantity}",
+            accessibility_lines=[f"link:{selected_name}", f"button:수량 {quantity}"],
+            screenshot_base64="ZmFrZS1jYXJ0LXNuYXBzaG90",
+            interactive_elements=[f"link:{selected_name}", f"button:수량 {quantity}"],
+            cart_items=[
+                ObservedCartItem(
+                    name=selected_name,
+                    quantity=quantity,
+                    quantity_text=f"{quantity}개",
+                )
+            ],
+            cart_count=quantity,
+        )
 
     def execute_action(self, action) -> str:
         self.executed_action_objects.append(action)

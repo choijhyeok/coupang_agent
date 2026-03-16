@@ -164,6 +164,8 @@ class InMemoryOperationalStore:
                 "agent_reasoning_summary": agent_reasoning_summary,
                 "last_observation": last_observation,
                 "agent_steps": list(agent_steps or []),
+                "selections": [asdict(selection) for selection in selections],
+                "cart_results": [asdict(result) for result in cart_results],
                 "recorded_at": now,
             }
         )

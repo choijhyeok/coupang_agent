@@ -8,7 +8,13 @@ from coupang_cart_agent.cart_executor import (
     OutOfStockError,
     SessionCredentials,
 )
-from coupang_cart_agent.contracts import ProductCandidate, SelectedProduct, ShoppingRequest
+from coupang_cart_agent.contracts import (
+    BrowserObservation,
+    ObservedCartItem,
+    ProductCandidate,
+    SelectedProduct,
+    ShoppingRequest,
+)
 from coupang_cart_agent.integration import CoupangCartAgentFlow
 from coupang_cart_agent.notifications import RetryingNotificationService
 from coupang_cart_agent.selection import HeuristicProductSelectionService
@@ -51,6 +57,24 @@ class FakeCoupangPage:
     def checkout_started(self) -> bool:
         self.calls.append("checkout_started")
         return False
+
+    def observe_cart_verification(self) -> BrowserObservation:
+        self.calls.append("observe_cart_verification")
+        return BrowserObservation(
+            step_index=0,
+            url="https://cart.coupang.com/cartView.pang",
+            title="쿠팡! | 장바구니",
+            page_kind="browse",
+            body_text_excerpt="콜라 제로 추천 수량 2",
+            cart_items=[
+                ObservedCartItem(
+                    name="콜라 제로 추천",
+                    quantity=2,
+                    quantity_text="2개",
+                )
+            ],
+            screenshot_base64="ZmFrZS1jYXJ0LXNuYXBzaG90",
+        )
 
 
 def candidate_source(request: ShoppingRequest) -> dict[str, list[ProductCandidate]]:

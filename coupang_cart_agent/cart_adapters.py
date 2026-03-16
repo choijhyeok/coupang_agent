@@ -29,6 +29,7 @@ from .contracts import (
     BrowserAgentAction,
     BrowserAgentActionType,
     BrowserObservation,
+    ObservedCartItem,
     ObservedProduct,
     SelectedProduct,
 )
@@ -41,6 +42,7 @@ class DemoCoupangCartPage:
     def __init__(self, *, should_fail: bool) -> None:
         self._should_fail = should_fail
         self._snapshots = 0
+        self._last_selection: SelectedProduct | None = None
 
     def attach_to_logged_in_session(self, credentials: SessionCredentials | None = None) -> str:
         return "attached_demo_session"
@@ -56,6 +58,7 @@ class DemoCoupangCartPage:
             raise OutOfStockError("Selected product is sold out.")
 
     def select_options(self, selection: SelectedProduct) -> dict[str, str]:
+        self._last_selection = selection
         selected_options = {"quantity": str(selection.quantity)}
         selected_options.update(selection.option_hints)
         return selected_options
@@ -70,6 +73,29 @@ class DemoCoupangCartPage:
 
     def checkout_started(self) -> bool:
         return False
+
+    def observe_cart_verification(self) -> BrowserObservation:
+        selection = self._last_selection
+        item_name = "양파 추천" if selection is None else selection.candidate.name
+        quantity = 1 if selection is None else max(1, selection.quantity)
+        return BrowserObservation(
+            step_index=0,
+            url="https://cart.coupang.com/cartView.pang",
+            title="쿠팡 장바구니",
+            page_kind="browse",
+            body_text_excerpt=f"{item_name} 수량 {quantity}",
+            accessibility_lines=[f"link:{item_name}", f"button:수량 {quantity}"],
+            screenshot_base64=encode_screenshot_bytes(b"demo-cart-proof"),
+            interactive_elements=[f"link:{item_name}", f"button:수량 {quantity}"],
+            cart_items=[
+                ObservedCartItem(
+                    name=item_name,
+                    quantity=quantity,
+                    quantity_text=f"{quantity}개",
+                    package_summary=f"{quantity}개",
+                )
+            ],
+        )
 
     def observe(
         self,
@@ -273,7 +299,40 @@ class PlaywrightCoupangCartPage:
         step_index: int,
         last_action_summary: str | None = None,
     ) -> BrowserObservation:
+        return self._build_observation(
+            page=self._page_object(),
+            step_index=step_index,
+            last_action_summary=last_action_summary,
+            screenshot_label=f"step-{step_index}",
+        )
+
+    def observe_cart_verification(self) -> BrowserObservation:
         page = self._page_object()
+        original_url = page.url
+        cart_page = self._context_object().new_page()
+        try:
+            cart_page.goto(self._settings.cart_url, wait_until="domcontentloaded")
+            cart_page.wait_for_timeout(2500)
+            self._assert_no_session_blockers(cart_page)
+            return self._build_observation(
+                page=cart_page,
+                step_index=0,
+                last_action_summary="post-action cart verification",
+                screenshot_label="verification-cart",
+            )
+        finally:
+            cart_page.close()
+            if original_url:
+                page.bring_to_front()
+
+    def _build_observation(
+        self,
+        *,
+        page: Page,
+        step_index: int,
+        last_action_summary: str | None,
+        screenshot_label: str,
+    ) -> BrowserObservation:
         blocker_hint = None
         try:
             self._assert_no_session_blockers(page)
@@ -285,7 +344,7 @@ class PlaywrightCoupangCartPage:
         snapshot = self._extract_browser_snapshot(page)
         screenshot_dir = Path(".artifacts/browser-agent")
         screenshot_dir.mkdir(parents=True, exist_ok=True)
-        screenshot_path = screenshot_dir / f"step-{step_index}.png"
+        screenshot_path = screenshot_dir / f"{screenshot_label}.png"
         screenshot_bytes = None
         try:
             screenshot_bytes = page.screenshot(path=str(screenshot_path), type="png")
@@ -305,6 +364,19 @@ class PlaywrightCoupangCartPage:
                 sold_out=bool(raw.get("sold_out", False)),
             )
             for raw in snapshot.get("observed_products", [])
+            if str(raw.get("name", "")).strip()
+        ]
+        cart_items = [
+            ObservedCartItem(
+                name=str(raw.get("name", "")).strip(),
+                quantity=(None if raw.get("quantity") in (None, "") else int(raw["quantity"])),
+                quantity_text=(None if not raw.get("quantity_text") else str(raw.get("quantity_text"))),
+                option_summary=(None if not raw.get("option_summary") else str(raw.get("option_summary"))),
+                package_summary=(None if not raw.get("package_summary") else str(raw.get("package_summary"))),
+                price_text=(None if not raw.get("price_text") else str(raw.get("price_text"))),
+                badges=[str(item) for item in raw.get("badges", [])],
+            )
+            for raw in snapshot.get("cart_items", [])
             if str(raw.get("name", "")).strip()
         ]
         page_kind = self._page_kind(
@@ -338,6 +410,7 @@ class PlaywrightCoupangCartPage:
             screenshot_base64=encode_screenshot_bytes(screenshot_bytes),
             interactive_elements=[str(item) for item in snapshot.get("interactive_elements", [])[:25]],
             observed_products=observed_products[:8],
+            cart_items=cart_items[:8],
             selected_product_hint=selected_product_hint,
             available_options=available_options,
             add_to_cart_visible=add_to_cart_visible,
@@ -566,6 +639,7 @@ class PlaywrightCoupangCartPage:
                   }
                   const currentUrl = window.location.href;
                   const isProductPage = /\\/vp\\/products\\//.test(currentUrl);
+                  const isCartPage = /cartview\\.pang/i.test(currentUrl);
                   const bodyText = normalize(document.body ? document.body.innerText : '');
                   const heading = normalize((document.querySelector('h1') || {}).innerText || '');
                   const priceMatch = bodyText.match(/([0-9][0-9,]{2,})\\s*원?/);
@@ -604,9 +678,48 @@ class PlaywrightCoupangCartPage:
                     const text = normalize(element.innerText || element.textContent || element.getAttribute('aria-label'));
                     return /장바구니\\s*담기|카트에\\s*담기|담기/.test(text);
                   }) || /장바구니\\s*담기/.test(bodyText) || (isProductPage && /장바구니\\s*담기/.test(documentText));
+                  const cartItems = !isCartPage
+                    ? []
+                    : Array.from(document.querySelectorAll("a[href*='/vp/products/']"))
+                        .filter((anchor) => visible(anchor))
+                        .map((anchor) => {
+                          const container = anchor.closest("[data-cart-item-id], li, article, section, div, tr") || anchor;
+                          const containerText = normalize(container.innerText || container.textContent);
+                          const quantityInput = container.querySelector("input[type='number'], input[name*='qty'], input[name*='quantity']");
+                          const quantitySelect = container.querySelector("select");
+                          const quantityTextMatch = containerText.match(/(?:수량|수량변경)[^0-9]{0,8}(\\d+)|(?<![0-9])(\\d+)\\s*개/);
+                          const quantityValue = quantityInput && quantityInput.value
+                            ? parseInt(quantityInput.value, 10)
+                            : quantitySelect && quantitySelect.value
+                              ? parseInt(quantitySelect.value, 10)
+                              : quantityTextMatch
+                                ? parseInt(quantityTextMatch[1] || quantityTextMatch[2], 10)
+                                : null;
+                          const lines = containerText.split(/\\n+/).map((line) => normalize(line)).filter(Boolean);
+                          const name = normalize(anchor.innerText || anchor.textContent);
+                          const supplemental = lines.filter((line) => line && line !== name);
+                          const priceMatch = containerText.match(/([0-9][0-9,]{2,})\\s*원?/);
+                          const packageLine = supplemental.find((line) => /\\d+\\s*(개|입|kg|g|ml|l|L|팩|봉)/.test(line)) || null;
+                          const optionLine = supplemental.find((line) => /옵션|색상|사이즈|용량/.test(line)) || null;
+                          return {
+                            name: name.slice(0, 160),
+                            quantity: Number.isFinite(quantityValue) ? quantityValue : null,
+                            quantity_text: quantityTextMatch ? quantityTextMatch[0] : null,
+                            option_summary: optionLine ? optionLine.slice(0, 160) : null,
+                            package_summary: packageLine ? packageLine.slice(0, 160) : null,
+                            price_text: priceMatch ? priceMatch[1] : null,
+                            badges: Array.from(container.querySelectorAll('img[alt], [aria-label]'))
+                              .map((element) => normalize(element.getAttribute('alt') || element.getAttribute('aria-label')))
+                              .filter(Boolean)
+                              .slice(0, 4),
+                          };
+                        })
+                        .filter((item) => item.name)
+                        .slice(0, 8);
                   return {
                     interactive_elements: interactiveElements,
                     observed_products: observedProducts,
+                    cart_items: cartItems,
                     selected_product_hint: isProductPage && heading ? {
                       name: heading,
                       href: currentUrl,
@@ -1030,6 +1143,13 @@ class ExistingChromeCdpCoupangCartPage(PlaywrightCoupangCartPage):
                 step_index=step_index,
                 last_action_summary=last_action_summary,
             )
+        )
+        assert isinstance(observation, BrowserObservation)
+        return observation
+
+    def observe_cart_verification(self) -> BrowserObservation:
+        observation = self._run_on_worker(
+            super(ExistingChromeCdpCoupangCartPage, self).observe_cart_verification
         )
         assert isinstance(observation, BrowserObservation)
         return observation
