@@ -23,6 +23,7 @@ from .contracts import (
     SelectedProduct,
     ShoppingRequest,
 )
+from .cart_verification import CartVerificationModel, DeterministicCartVerifier
 
 
 class BrowserAgentDriver(Protocol):
@@ -40,6 +41,8 @@ class BrowserAgentDriver(Protocol):
         step_index: int,
         last_action_summary: str | None = None,
     ) -> BrowserObservation: ...
+
+    def observe_cart_verification(self) -> BrowserObservation: ...
 
     def execute_action(self, action: BrowserAgentAction) -> str: ...
 
@@ -213,10 +216,12 @@ class CoupangLiveBrowserShoppingAgent:
         *,
         driver: BrowserAgentDriver,
         model: BrowserAgentModel,
+        cart_verifier: CartVerificationModel | None = None,
         max_steps_per_item: int = 8,
     ) -> None:
         self._driver = driver
         self._model = model
+        self._cart_verifier = cart_verifier or DeterministicCartVerifier()
         self._max_steps_per_item = max_steps_per_item
 
     def run(
@@ -334,13 +339,52 @@ class CoupangLiveBrowserShoppingAgent:
                             steps=steps,
                         )
 
+                    verification_observation = self._driver.observe_cart_verification()
+                    verification = self._cart_verifier.verify(
+                        selection=selected_product,
+                        observation=verification_observation,
+                        cart_count_before=before.item_count,
+                        cart_count_after=after.item_count,
+                    )
+                    if not verification.success:
+                        cart_results.append(
+                            CartAddResult(
+                                success=False,
+                                cart_item_id=None,
+                                selected_product=selected_product,
+                                stage=CartAddStage.VERIFICATION,
+                                message=verification.reason,
+                                failure_reason=(
+                                    verification.failure_reason
+                                    or CartAddFailureReason.MANUAL_REVIEW_REQUIRED
+                                ),
+                                cart_count_before=before.item_count,
+                                cart_count_after=after.item_count,
+                                checkout_attempted=False,
+                                evidence={
+                                    "session_mode": session_mode,
+                                    "selected_options": selected_options,
+                                    "reasoning_summary": action.reasoning_summary,
+                                    "last_observation": asdict(observation),
+                                    "verification": verification.evidence,
+                                },
+                            )
+                        )
+                        return BrowserAgentRun(
+                            selections=selections + [selected_product],
+                            cart_results=cart_results,
+                            reasoning_summary=verification.reason,
+                            last_observation=verification_observation,
+                            steps=steps,
+                        )
+
                     cart_results.append(
                         CartAddResult(
                             success=True,
                             cart_item_id=_cart_item_id_from_selection(selected_product),
                             selected_product=selected_product,
-                            stage=CartAddStage.ADD_TO_CART,
-                            message="Item added to cart.",
+                            stage=CartAddStage.VERIFICATION,
+                            message="Item added to cart and verified.",
                             cart_count_before=before.item_count,
                             cart_count_after=after.item_count,
                             checkout_attempted=False,
@@ -349,6 +393,7 @@ class CoupangLiveBrowserShoppingAgent:
                                 "selected_options": selected_options,
                                 "reasoning_summary": action.reasoning_summary,
                                 "last_observation": asdict(observation),
+                                "verification": verification.evidence,
                             },
                         )
                     )

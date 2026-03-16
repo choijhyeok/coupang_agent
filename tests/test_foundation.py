@@ -33,6 +33,7 @@ from coupang_cart_agent.contracts import (
     BrowserObservation,
     CartAddFailureReason,
     CartAddStage,
+    ObservedCartItem,
     ObservedProduct,
     ProductCandidate,
     RequestedItem,
@@ -842,6 +843,28 @@ class FakeCoupangPage:
         self.calls.append("checkout_started")
         return self._checkout_started
 
+    def observe_cart_verification(self) -> BrowserObservation:
+        self.calls.append("observe_cart_verification")
+        return BrowserObservation(
+            step_index=0,
+            url="https://cart.coupang.com/cartView.pang",
+            title="쿠팡! | 장바구니",
+            page_kind="browse",
+            body_text_excerpt="Coca-Cola Zero 355ml x 24 수량 1",
+            interactive_elements=["link:Coca-Cola Zero 355ml x 24", "button:수량 1"],
+            accessibility_lines=["link:Coca-Cola Zero 355ml x 24", "button:수량 1"],
+            cart_items=[
+                ObservedCartItem(
+                    name="Coca-Cola Zero 355ml x 24",
+                    quantity=1,
+                    quantity_text="1개",
+                    package_summary="24입",
+                )
+            ],
+            screenshot_base64="ZmFrZS1jYXJ0LXNuYXBzaG90",
+            cart_count=self.after_count,
+        )
+
     def _raise_if(self, error_type: type[Exception], *, stage: str | None = None) -> None:
         if isinstance(self.failure, error_type):
             if stage is None or getattr(self.failure, "stage", stage) == stage:
@@ -886,14 +909,15 @@ class CartExecutorTests(unittest.TestCase):
             persisted = store.fetch_all()
 
             self.assertTrue(result.success)
-            self.assertEqual(result.stage, CartAddStage.ADD_TO_CART)
+            self.assertEqual(result.stage, CartAddStage.VERIFICATION)
             self.assertIsNone(result.failure_reason)
             self.assertEqual(result.cart_count_before, 3)
             self.assertEqual(result.cart_count_after, 4)
             self.assertFalse(result.checkout_attempted)
             self.assertEqual(result.evidence["session_mode"], "attached_browser_session")
+            self.assertTrue(result.evidence["verification"]["cart_observation"]["has_screenshot"])
             self.assertEqual(len(persisted), 1)
-            self.assertEqual(persisted[0]["stage"], "add_to_cart")
+            self.assertEqual(persisted[0]["stage"], "verification")
             self.assertTrue(persisted[0]["success"])
             self.assertEqual(
                 page.calls,
@@ -907,6 +931,7 @@ class CartExecutorTests(unittest.TestCase):
                     "add_to_cart",
                     "cart_snapshot",
                     "checkout_started",
+                    "observe_cart_verification",
                 ],
             )
 

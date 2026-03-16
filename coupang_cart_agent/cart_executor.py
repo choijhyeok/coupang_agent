@@ -5,7 +5,9 @@ from datetime import UTC, datetime
 from typing import Protocol
 
 from .cart_persistence import CartResultStore, build_cart_result_record
+from .cart_verification import CartVerificationModel, DeterministicCartVerifier
 from .contracts import (
+    BrowserObservation,
     CartAddFailureReason,
     CartAddResult,
     CartAddStage,
@@ -72,6 +74,8 @@ class CoupangCartPage(Protocol):
 
     def checkout_started(self) -> bool: ...
 
+    def observe_cart_verification(self) -> BrowserObservation: ...
+
 
 @dataclass(slots=True)
 class AuditEntry:
@@ -89,10 +93,12 @@ class CoupangCartExecutor:
         page: CoupangCartPage,
         credentials: SessionCredentials | None = None,
         result_store: CartResultStore | None = None,
+        verifier: CartVerificationModel | None = None,
     ) -> None:
         self._page = page
         self._credentials = credentials
         self._result_store = result_store
+        self._verifier = verifier or DeterministicCartVerifier()
         self._audit_entries: list[AuditEntry] = []
 
     def add_products(self, selections: list[SelectedProduct]) -> list[CartAddResult]:
@@ -146,12 +152,49 @@ class CoupangCartExecutor:
                     },
                 )
 
+            stage = CartAddStage.VERIFICATION
+            verification_observation = self._page.observe_cart_verification()
+            verification = self._verifier.verify(
+                selection=selection,
+                observation=verification_observation,
+                cart_count_before=before.item_count,
+                cart_count_after=after.item_count,
+            )
+            self._audit(
+                stage,
+                "Post-action cart verification completed",
+                verification_success=verification.success,
+                verification_failure_reason=verification.failure_reason,
+                matched_item_name=verification.matched_item_name,
+            )
+            if not verification.success:
+                return self._failure_result(
+                    selection,
+                    stage=stage,
+                    failure_reason=(
+                        verification.failure_reason or CartAddFailureReason.MANUAL_REVIEW_REQUIRED
+                    ),
+                    message=verification.reason,
+                    cart_count_before=before.item_count,
+                    cart_count_after=after.item_count,
+                    checkout_attempted=False,
+                    evidence={
+                        "selected_options": selected_options,
+                        "session_mode": session_mode,
+                        "product_url": selection.candidate.product_url,
+                        "recorded_at": datetime.now(UTC).isoformat(),
+                        "cart_snapshot_before": before.summary,
+                        "cart_snapshot_after": after.summary,
+                        "verification": verification.evidence,
+                    },
+                )
+
             result = CartAddResult(
                 success=True,
                 cart_item_id=cart_item_id,
                 selected_product=selection,
                 stage=stage,
-                message="Item added to cart.",
+                message="Item added to cart and verified.",
                 cart_count_before=before.item_count,
                 cart_count_after=after.item_count,
                 checkout_attempted=False,
@@ -162,6 +205,7 @@ class CoupangCartExecutor:
                     "recorded_at": datetime.now(UTC).isoformat(),
                     "cart_snapshot_before": before.summary,
                     "cart_snapshot_after": after.summary,
+                    "verification": verification.evidence,
                 },
             )
             self._persist_result(result)

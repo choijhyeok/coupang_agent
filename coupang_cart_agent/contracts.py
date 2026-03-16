@@ -13,6 +13,7 @@ class CartAddStage(StrEnum):
     PRODUCT_PAGE = "product_page"
     OPTION_SELECTION = "option_selection"
     ADD_TO_CART = "add_to_cart"
+    VERIFICATION = "verification"
 
 
 class CartAddFailureReason(StrEnum):
@@ -27,6 +28,8 @@ class CartAddFailureReason(StrEnum):
     AMBIGUITY = "ambiguity"
     UI_ELEMENT_NOT_FOUND = "ui_element_not_found"
     CHECKOUT_ATTEMPTED = "checkout_attempted"
+    VERIFICATION_MISMATCH = "verification_mismatch"
+    MANUAL_REVIEW_REQUIRED = "manual_review_required"
     UNKNOWN = "unknown"
 
 
@@ -192,6 +195,19 @@ class ObservedProduct:
 
 
 @dataclass(slots=True)
+class ObservedCartItem:
+    """Structured cart item clue extracted from a cart or mini-cart view."""
+
+    name: str
+    quantity: int | None = None
+    quantity_text: str | None = None
+    option_summary: str | None = None
+    package_summary: str | None = None
+    price_text: str | None = None
+    badges: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class BrowserObservation:
     """Current browser state exposed to the AOAI decision engine."""
 
@@ -206,6 +222,7 @@ class BrowserObservation:
     screenshot_base64: str | None = None
     interactive_elements: list[str] = field(default_factory=list)
     observed_products: list[ObservedProduct] = field(default_factory=list)
+    cart_items: list[ObservedCartItem] = field(default_factory=list)
     selected_product_hint: dict[str, object] = field(default_factory=dict)
     available_options: list[str] = field(default_factory=list)
     add_to_cart_visible: bool = False
