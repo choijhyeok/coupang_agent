@@ -111,6 +111,9 @@
   - `PlaywrightContextManager` could be left partially initialized on attach failures and then crash in `close()` with `AttributeError: ... _connection`.
   - `cart-live-inspect-session` now exits with structured JSON instead of a teardown traceback when attach fails early.
   - `ExistingChromeCdpCoupangCartPage` now dispatches Playwright sync setup onto a dedicated worker thread when an asyncio loop is already running, so the attach path no longer dies with `It looks like you are using Playwright Sync API inside the asyncio loop.`
+- README/operator docs updated on 2026-03-16:
+  - Added explicit interpretation for `cart-live-inspect-session` outputs, including the difference between `LoginFailedError` and a reachable-but-unauthenticated `LoginRequiredError` / `session_blocked`.
+  - Documented that CDP reachability alone is not proof of a valid logged-in Coupang cart session.
 - LangGraph checkpoint warning observed during automated tests:
   - `Deserializing unregistered type coupang_cart_agent.contracts.CartAddStage from checkpoint`
   - Current tests still pass, but this is now tracked as follow-up issue `HOW-25` because a future LangGraph release may block these restores.

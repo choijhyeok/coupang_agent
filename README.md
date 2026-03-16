@@ -169,6 +169,20 @@ uv run python -m coupang_cart_agent cart-live-add \
 
 `cart-live-add` prints `attach_mode_requires_operator_login: true` and the active Chrome profile directory so operators can confirm the run started from an already prepared session.
 
+Interpret `cart-live-inspect-session` before attempting a live run:
+
+- `error_type=LoginFailedError`: no reachable CDP endpoint or attachable browser process for the selected mode
+- `error_type=LoginRequiredError` with `page_kind=session_blocked`: the browser session is reachable, but Coupang cart still shows an unauthenticated state such as `로그인하기`
+- `error_type=AccessDeniedError` or `SecurityChallengeError`: stop and re-prepare the session; do not retry the shopping run blindly
+- no error and a non-blocked observation: the browser looks attachable enough to attempt a live search-to-cart run
+
+The current workspace produced both of the first two cases:
+
+- `existing_cdp` against an unused port returned a structured `LoginFailedError`
+- `existing_cdp` against a reachable local Chrome session on port `9226` attached successfully, reached `https://cart.coupang.com/cartView.pang`, and still returned `LoginRequiredError` / `session_blocked`
+
+That distinction matters operationally: CDP reachability alone does not prove the attached Chrome session is actually logged in to Coupang for cart actions.
+
 If the operator wants to attach to the exact running Chrome session instead of a copied profile, start Chrome manually with remote debugging enabled and switch the launch mode:
 
 ```bash
@@ -250,6 +264,12 @@ Operational data is stored separately in PostgreSQL:
 
 `workflow_runs` now stores the agent plan, reasoning summary, last observation snapshot, and step trace alongside cart results. That lets the workflow restore both prior purchase history and current-thread session signals on subsequent runs.
 
+For live browser-agent failures, the stored observation now explicitly distinguishes:
+
+- `session_blocked`: login page, unauthenticated cart state, Access Denied, or security challenge
+- `search_results`: reachable search page with visible product candidates
+- `product_page`: reachable PDP or option-selection state
+
 ## Validation
 
 Unit and integration tests:
@@ -296,6 +316,7 @@ Recorded live validation evidence on March 11, 2026:
 - The workflow stops at verified add-to-cart. It must not continue into checkout or payment.
 - `COUPANG_USERNAME` and `COUPANG_PASSWORD` are optional legacy fields and are not used by the attach-mode live path.
 - `cart-live-inspect-session` is the fastest operator command to confirm whether the attached browser is really logged in, blocked by Access Denied/security, or simply missing a reachable CDP endpoint.
+- A reachable CDP session can still be unusable if Coupang cart renders `로그인하기`; treat that as a session/auth blocker, not a selector problem.
 - `cart-live-add` remains useful for isolated Coupang selector debugging.
 - `integration-demo` and `/smoke/demo` are safe local validation paths.
 - `integration-live-*` commands are the production-shaped integration paths.
