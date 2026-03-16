@@ -417,8 +417,7 @@ class FoundationTests(unittest.TestCase):
             return "attached_existing_cdp_session"
 
         with patch.object(PlaywrightCoupangCartPage, "attach_to_logged_in_session", side_effect=fake_attach):
-            with patch.object(ExistingChromeCdpCoupangCartPage, "_event_loop_running", return_value=True):
-                result = page.attach_to_logged_in_session(None)
+            result = page.attach_to_logged_in_session(None)
 
         self.assertEqual(result, "attached_existing_cdp_session")
         self.assertTrue(worker_thread_ids)

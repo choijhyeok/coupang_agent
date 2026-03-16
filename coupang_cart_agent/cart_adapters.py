@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import queue
 import shutil
 import subprocess
@@ -957,8 +956,14 @@ class ExistingChromeCdpCoupangCartPage(PlaywrightCoupangCartPage):
 
     def _close_local_resources(self) -> None:
         if self._browser is not None:
-            self._browser.close()
-        self._close_playwright_context_manager()
+            try:
+                self._browser.close()
+            except Exception:
+                pass
+        try:
+            self._close_playwright_context_manager()
+        except Exception:
+            pass
         self._playwright_cm = None
         self._playwright = None
         self._browser = None
@@ -967,8 +972,6 @@ class ExistingChromeCdpCoupangCartPage(PlaywrightCoupangCartPage):
 
     def _run_on_worker(self, operation: Callable[[], object]) -> object:
         if self._worker_thread is not None and threading.current_thread() is self._worker_thread:
-            return operation()
-        if not self._event_loop_running():
             return operation()
         if self._worker_thread is None or self._worker_queue is None or not self._worker_thread.is_alive():
             self._worker_queue = queue.Queue()
@@ -1003,12 +1006,6 @@ class ExistingChromeCdpCoupangCartPage(PlaywrightCoupangCartPage):
             else:
                 assert response_queue is not None
                 response_queue.put((True, result))
-
-    def _event_loop_running(self) -> bool:
-        try:
-            return asyncio.get_running_loop().is_running()
-        except RuntimeError:
-            return False
 
 
 class BrowserUseCoupangCartPage(ChromeCdpCoupangCartPage):
