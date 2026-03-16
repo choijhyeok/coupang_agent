@@ -177,6 +177,7 @@
 - README/operator docs updated on 2026-03-16:
   - Added explicit interpretation for `cart-live-inspect-session` outputs, including the difference between `LoginFailedError` and a reachable-but-unauthenticated `LoginRequiredError` / `session_blocked`.
   - Documented that CDP reachability alone is not proof of a valid logged-in Coupang cart session.
+  - Replaced the stale README note that said fresh AOAI browser-agent live validation was still pending; the README now records the two 2026-03-16 live attach-mode successes plus the structured attach/session failure evidence.
 - LangGraph checkpoint warning observed during automated tests:
   - `Deserializing unregistered type coupang_cart_agent.contracts.CartAddStage from checkpoint`
   - Current tests still pass, but this is now tracked as follow-up issue `HOW-25` because a future LangGraph release may block these restores.

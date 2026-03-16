@@ -302,14 +302,21 @@ uv run python -m coupang_cart_agent integration-live-telegram-once --timeout 10
 uv run python -m coupang_cart_agent integration-live-telegram-worker --timeout 30 --sleep-seconds 1
 ```
 
-Recorded live validation evidence on March 11, 2026:
+Recorded live validation evidence:
 
 - Real Telegram intake capture succeeded for `telegram-update-286968896` with text `콜라 제로 2개 담아줘`
 - Real Telegram worker execution succeeded with:
   `POSTGRES_DSN=postgresql://postgres:postgres@localhost:5432/coupang_cart_agent COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Profile 1' uv run python -m coupang_cart_agent integration-live-telegram-worker --timeout 1 --sleep-seconds 0 --max-cycles 1 --intake-db-path .artifacts/how22_telegram_intake.sqlite3 --fixture-path tests/fixtures/coupang_search_onion_fixture.json --skip-error-response`
 - Worker restart restored offset `286968897` from `.artifacts/how22_telegram_intake.sqlite3` and resumed with no duplicate processing on a second `integration-live-telegram-worker` run.
 - Telegram success notification payload recorded `총 1종, 2개, 17,960원 장바구니 담기 완료`.
-- Fresh AOAI browser-agent live validation is still required after login/session access is prepared for the current workspace.
+- March 16, 2026 live attach-mode browser-agent success:
+  `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=browser_use COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Default' uv run python -m coupang_cart_agent integration-live-request '한끼 양파 300g 1개 담아줘' --user-id telegram:8201584878 --chat-id 8201584878`
+- March 16, 2026 second live attach-mode success without fixed URL:
+  `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=browser_use COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Default' uv run python -m coupang_cart_agent integration-live-request '생수 2L 1개 담아줘' --user-id telegram:8201584878 --chat-id 8201584878`
+- March 16, 2026 structured attach/session failure evidence:
+  `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=existing_cdp COUPANG_CHROME_REMOTE_DEBUGGING_PORT=9226 uv run python -m coupang_cart_agent integration-live-request '양파 1개 담아줘' --user-id telegram:8201584878 --chat-id 8201584878`
+- Remaining live-quality debt is narrowed to follow-up issues, not core-path completion:
+  explicit brand/pack-size intent (`HOW-28`) and intermittent attached-browser navigation timeouts.
 
 ## Notes
 
