@@ -25,7 +25,7 @@
 
 - [x] Branch / commit / publish status recorded
   - Branch: `codex/how-29-brand-pack-constraints`
-  - Commit: `85e3ded`
+  - Commit: `a428ae8`
   - Push: `git push -u origin codex/how-29-brand-pack-constraints`
   - PR: `https://github.com/choijhyeok/coupang_agent/pull/16`
 
