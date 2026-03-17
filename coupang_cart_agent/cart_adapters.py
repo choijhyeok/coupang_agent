@@ -461,7 +461,7 @@ class PlaywrightCoupangCartPage:
             )
             if locator is None:
                 raise UIElementNotFoundError("Action target was not found.")
-            self._click_add_to_cart_button(locator) if action.action_type == BrowserAgentActionType.CLICK else locator.click()
+            locator.click()
             page.wait_for_timeout(1500)
             return f"Clicked {action.target_text or action.target_href or action.value or 'target'}."
         if action.action_type == BrowserAgentActionType.ADD_TO_CART:

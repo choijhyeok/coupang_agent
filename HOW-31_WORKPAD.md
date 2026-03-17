@@ -63,6 +63,7 @@
   - `COUPANG_BROWSER_LAUNCH_MODE=cdp_chrome COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Default' COUPANG_BROWSER_HEADLESS=false uv run python -m coupang_cart_agent cart-live-inspect-session` -> success, `session_mode: attached_cdp_profile`
   - `uv run python -m unittest tests.test_scrapling_adapter tests.test_live_browser_agent` -> `OK` (17 tests)
   - `uv run python -m unittest tests.test_scrapling_adapter tests.test_live_browser_agent tests.test_live_workflow_verification` -> `OK` (18 tests)
+  - `uv run python -m unittest tests.test_live_browser_agent tests.test_scrapling_adapter tests.test_live_workflow_verification` -> `OK` (18 tests) after fixing generic `CLICK` actions to use plain locator clicks instead of add-to-cart-specific click handling
 - Regression evidence:
   - Fold-below CTA recovery: `tests.test_live_browser_agent.LiveBrowserAgentTests.test_agent_scrolls_when_add_to_cart_exists_below_fold`
   - Purchase-restricted substitute recovery: `tests.test_live_browser_agent.LiveBrowserAgentTests.test_agent_replans_to_substitute_when_first_product_is_purchase_restricted`
@@ -86,6 +87,8 @@
   - PR `#18` inline review threads: none
   - Linear comments updated with refreshed published head and post-publish verification evidence
 - Note: metadata-only commits after a publish refresh advance `HEAD`; the exact latest published SHA is also recorded in the most recent Linear handoff comment to avoid self-referential drift.
+- Additional fix during self-review:
+  - `coupang_cart_agent/cart_adapters.py` now uses `locator.click()` for generic `CLICK` recovery actions so search-result selection and expandable-section clicks do not flow through add-to-cart-specific click handling.
 
 ### Follow-up Issues Created
 
