@@ -62,6 +62,7 @@
 - Additional validation commands after live-driven extractor fixes:
   - `COUPANG_BROWSER_LAUNCH_MODE=cdp_chrome COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Default' COUPANG_BROWSER_HEADLESS=false uv run python -m coupang_cart_agent cart-live-inspect-session` -> success, `session_mode: attached_cdp_profile`
   - `uv run python -m unittest tests.test_scrapling_adapter tests.test_live_browser_agent` -> `OK` (17 tests)
+  - `uv run python -m unittest tests.test_scrapling_adapter tests.test_live_browser_agent tests.test_live_workflow_verification` -> `OK` (18 tests)
 - Regression evidence:
   - Fold-below CTA recovery: `tests.test_live_browser_agent.LiveBrowserAgentTests.test_agent_scrolls_when_add_to_cart_exists_below_fold`
   - Purchase-restricted substitute recovery: `tests.test_live_browser_agent.LiveBrowserAgentTests.test_agent_replans_to_substitute_when_first_product_is_purchase_restricted`
@@ -76,9 +77,15 @@
     - Cart verification: `cart_count_before: 0`, `cart_count_after: 1`, `stage: verification`, `message: Item added to cart and verified.`
     - Telegram success notification was sent through the live workflow path after verification.
 - Branch: `how-31-goal-driven-recovery-loop`
-- Commit: `01b00297dd04c2975c225c01027d49d448ab288e`
+- Commit at latest published verification handoff: `5567658d97a491ecaef4699518bbf93a7ec86e75`
 - Push: `git push origin how-31-goal-driven-recovery-loop` -> success
 - PR: `https://github.com/choijhyeok/coupang_agent/pull/18`
+- Latest review sweep:
+  - PR `#18` top-level comments: none
+  - PR `#18` reviews / review decision: none
+  - PR `#18` inline review threads: none
+  - Linear comments updated with refreshed published head and post-publish verification evidence
+- Note: metadata-only commits after a publish refresh advance `HEAD`; the exact latest published SHA is also recorded in the most recent Linear handoff comment to avoid self-referential drift.
 
 ### Follow-up Issues Created
 
