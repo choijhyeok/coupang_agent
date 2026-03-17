@@ -3,10 +3,10 @@
 ### Environment
 
 - Date: 2026-03-17 KST
-- Branch: `main`
+- Branch: `how-31-goal-driven-recovery-loop`
 - Workspace: `/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-31`
 - Issue type: feature module
-- Linear state: `Todo`
+- Linear state: active
 
 ### Plan
 
@@ -48,21 +48,35 @@
 - `coupang_cart_agent_cca14_runbook.md` is not present in this workspace.
 - Implemented a `ScraplingObservationAdapter` and moved the Playwright page observer to a Scrapling-first extraction path with persisted adaptive selector hints.
 - Added recovery actions and goal-driven replanning in the live browser agent: `scroll`, `go_back`, substitute-result selection, and goal-check retry on cart mismatch/review-needed outcomes.
+- Live validation setup:
+  - Chrome profiles detected under `$HOME/Library/Application Support/Google/Chrome`.
+  - `Profile 1` was not logged into Coupang.
+  - `Default` profile attached successfully with `COUPANG_BROWSER_LAUNCH_MODE=cdp_chrome`.
+  - Docker Postgres container `coupang_agent-postgres-1` was available on `localhost:5432`.
 - Validation commands:
   - `uv run python -m unittest tests.test_live_browser_agent` -> `OK` (14 tests)
   - `uv run python -m unittest tests.test_live_workflow_verification` -> `OK` (1 test)
   - `uv run python -m unittest tests.test_foundation tests.test_integration tests.test_live_workflow tests.test_cart_verification tests.test_notifications` -> `OK` (48 tests)
-  - `uv run python -m unittest discover -s tests` -> `OK` (91 tests)
+  - `uv run python -m unittest discover -s tests` -> `OK` (94 tests)
   - `uv run python -m compileall coupang_cart_agent tests` -> success
+- Additional validation commands after live-driven extractor fixes:
+  - `COUPANG_BROWSER_LAUNCH_MODE=cdp_chrome COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Default' COUPANG_BROWSER_HEADLESS=false uv run python -m coupang_cart_agent cart-live-inspect-session` -> success, `session_mode: attached_cdp_profile`
+  - `uv run python -m unittest tests.test_scrapling_adapter tests.test_live_browser_agent` -> `OK` (17 tests)
 - Regression evidence:
   - Fold-below CTA recovery: `tests.test_live_browser_agent.LiveBrowserAgentTests.test_agent_scrolls_when_add_to_cart_exists_below_fold`
   - Purchase-restricted substitute recovery: `tests.test_live_browser_agent.LiveBrowserAgentTests.test_agent_replans_to_substitute_when_first_product_is_purchase_restricted`
   - False-success prevention and retry after wrong cart item: `tests.test_live_browser_agent.LiveBrowserAgentTests.test_agent_blocks_false_success_and_recovers_after_wrong_cart_verification`
-- Live validation blockers confirmed:
-  - `uv run python -m coupang_cart_agent cart-live-inspect-session` -> `ConfigError: COUPANG_CHROME_USER_DATA_DIR is required when COUPANG_BROWSER_LAUNCH_MODE=browser_use.`
-  - `uv run python -m coupang_cart_agent check-config` shows `postgres_dsn_set: false`, so `integration-live-request` cannot run in this workspace.
+- Live validation evidence:
+  - Initial live run for `integration-live-request '시리얼 1개 담아줘'` failed with `purchase_restricted`; saved diagnostic HTML to `.artifacts/how31-search-page.html` and confirmed search results were mis-extracted while generic `와우회원할인` copy was over-classified as a purchase blocker.
+  - Added JSON-LD-backed search result extraction, product-page-only purchase restriction classification, and product JSON-LD / `og:title` preference for selected-product identification in `coupang_cart_agent/scrapling_adapter.py`.
+  - Final live run:
+    - `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=cdp_chrome COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Default' COUPANG_BROWSER_HEADLESS=false uv run python -m coupang_cart_agent integration-live-request '시리얼 1개 담아줘' --user-id 'telegram:8201584878' --chat-id '8201584878' --thread-id 'how31-live-cereal-rerun2'`
+    - Result: `success: true`
+    - Selected product: `오리온 미쯔블랙 시리얼, 360g, 1개`
+    - Cart verification: `cart_count_before: 0`, `cart_count_after: 1`, `stage: verification`, `message: Item added to cart and verified.`
+    - Telegram success notification was sent through the live workflow path after verification.
 - Branch: `how-31-goal-driven-recovery-loop`
-- Commit: `8823b35`
+- Commit: pending
 - Push: `git push -u origin how-31-goal-driven-recovery-loop` -> success
 - PR: `https://github.com/choijhyeok/coupang_agent/pull/18`
 
