@@ -27,6 +27,7 @@ class CartAddFailureReason(StrEnum):
     OPTION_MISMATCH = "option_mismatch"
     AMBIGUITY = "ambiguity"
     UI_ELEMENT_NOT_FOUND = "ui_element_not_found"
+    PURCHASE_RESTRICTED = "purchase_restricted"
     CHECKOUT_ATTEMPTED = "checkout_attempted"
     VERIFICATION_MISMATCH = "verification_mismatch"
     MANUAL_REVIEW_REQUIRED = "manual_review_required"
@@ -177,6 +178,8 @@ class BrowserAgentActionType(StrEnum):
     CLICK = "click"
     SELECT_OPTION = "select_option"
     ADD_TO_CART = "add_to_cart"
+    SCROLL = "scroll"
+    GO_BACK = "go_back"
     WAIT = "wait"
     STOP = "stop"
 
@@ -226,9 +229,15 @@ class BrowserObservation:
     selected_product_hint: dict[str, object] = field(default_factory=dict)
     available_options: list[str] = field(default_factory=list)
     add_to_cart_visible: bool = False
+    add_to_cart_available: bool = False
+    add_to_cart_in_viewport: bool = False
+    sticky_add_to_cart_visible: bool = False
+    expandable_sections: list[str] = field(default_factory=list)
+    purchase_blocked_reason: str | None = None
     blocker_hint: str | None = None
     cart_count: int | None = None
     last_action_summary: str | None = None
+    observation_engine: str = "playwright"
 
 
 @dataclass(slots=True)
@@ -242,6 +251,7 @@ class BrowserAgentAction:
     query: str | None = None
     option_label: str | None = None
     value: str | None = None
+    scroll_amount: int | None = None
     wait_seconds: float | None = None
     reasoning_summary: str = ""
     blocker_reason: CartAddFailureReason | None = None
