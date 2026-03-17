@@ -29,7 +29,7 @@
   - [x] `uv run python -m unittest tests.test_foundation tests.test_selection tests.test_integration tests.test_live_workflow_verification tests.test_live_browser_agent tests.test_cart_verification`
   - [x] `uv run python -m py_compile coupang_cart_agent/*.py tests/test_live_workflow.py tests/test_notifications.py tests/test_telegram_intake.py tests/test_telegram_worker.py`
   - [x] Real Telegram proposal message + image preview evidence
-  - [ ] Real Telegram confirmation -> add-to-cart -> verification success evidence
+  - [x] Real Telegram confirmation -> add-to-cart -> verification success evidence
   - [x] Real rejection or rerank evidence
   - [x] Real pending proposal restore evidence after process restart
   - [x] DB evidence from live Postgres run
@@ -51,6 +51,8 @@
   - [x] Result: rerank advanced candidate index from `0 -> 1 -> 2` on the same thread without cart mutation.
   - [x] `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=browser_use COUPANG_CHROME_USER_DATA_DIR=\"$HOME/Library/Application Support/Google/Chrome\" COUPANG_CHROME_PROFILE_DIRECTORY='Default' uv run python -m coupang_cart_agent integration-live-request 'ㅇㅇ 담아줘' --user-id 'telegram:8201584878' --chat-id '8201584878' --thread-id 'how35-live-onion-proposal-v4'`
   - [x] Result: candidate index `1` and candidate index `2` both failed on real product pages with `failure_reason=out_of_stock`.
+  - [x] `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=browser_use COUPANG_CHROME_USER_DATA_DIR=\"$HOME/Library/Application Support/Google/Chrome\" COUPANG_CHROME_PROFILE_DIRECTORY='Default' uv run python -m coupang_cart_agent integration-live-request 'ㅇㅇ 담아줘' --user-id 'telegram:8201584878' --chat-id '8201584878' --thread-id 'how35-live-cereal-proposal-v1'`
+  - [x] Result: saved proposal thread `how35-live-cereal-proposal-v1` resumed after restore, confirmed the proposed `오리온 미쯔블랙 시리얼, 360g, 1개`, executed add-to-cart, and verified success with `cart_count_before=0`, `cart_count_after=1`, `stage=verification`, screenshot `.artifacts/browser-agent/verification-cart.png`, and Telegram success notification after verification.
 
 - Notes
   - `check-config` showed Telegram and Azure OpenAI credentials are present; live validation used the already running local Postgres container at `postgresql://postgres:postgres@localhost:5432/coupang_cart_agent`.
@@ -62,9 +64,7 @@
   - Existing LangGraph checkpoint warning about unregistered `CartAddStage` still appears in tests and remains outside this issue’s scope.
 
 - Blockers
-  - Operator login is no longer the blocker; `Default` profile is attached successfully.
-  - The remaining live-completion blocker is real merchandise state on March 17, 2026: for the validated onion proposal candidates, one candidate produced a cart no-op with explicit verification mismatch evidence and the other two candidates were sold out. That prevents the required "confirmation -> add-to-cart -> verification success" evidence for this issue using the validated onion fixture/thread.
-  - Human unblock step: either provide a live-search-backed request/product set with at least one currently purchasable candidate, or approve a fresh fixture tied to a known addable Coupang product so the confirmation path can be re-run to a green verification result.
+  - None at issue scope. `Default` profile is attached successfully, and the required proposal, rerank, restore, and confirmation success evidence is now captured.
 
 - Follow-up Issues
   - Created `HOW-36` Backlog: `[Agent UX] Auto-fallback to next proposal candidate after confirmation add-to-cart failure`
