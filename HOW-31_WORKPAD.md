@@ -64,6 +64,8 @@
   - `uv run python -m unittest tests.test_scrapling_adapter tests.test_live_browser_agent` -> `OK` (17 tests)
   - `uv run python -m unittest tests.test_scrapling_adapter tests.test_live_browser_agent tests.test_live_workflow_verification` -> `OK` (18 tests)
   - `uv run python -m unittest tests.test_live_browser_agent tests.test_scrapling_adapter tests.test_live_workflow_verification` -> `OK` (18 tests) after fixing generic `CLICK` actions to use plain locator clicks instead of add-to-cart-specific click handling
+  - `uv run python -m unittest discover -s tests` -> `OK` (94 tests) on the post-fix head
+  - `uv run python -m compileall coupang_cart_agent tests` -> success on the post-fix head
 - Regression evidence:
   - Fold-below CTA recovery: `tests.test_live_browser_agent.LiveBrowserAgentTests.test_agent_scrolls_when_add_to_cart_exists_below_fold`
   - Purchase-restricted substitute recovery: `tests.test_live_browser_agent.LiveBrowserAgentTests.test_agent_replans_to_substitute_when_first_product_is_purchase_restricted`
