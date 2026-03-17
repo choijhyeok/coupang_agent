@@ -77,6 +77,9 @@ class PostgresOperationalStore:
                         last_observation_json JSONB,
                         agent_steps_json JSONB,
                         performance_json JSONB,
+                        conversation_status TEXT NOT NULL DEFAULT 'received',
+                        user_decision TEXT,
+                        proposal_state_json JSONB,
                         selections_json JSONB NOT NULL,
                         cart_results_json JSONB NOT NULL,
                         notification_payload_json JSONB,
@@ -149,6 +152,24 @@ class PostgresOperationalStore:
                     column_name="performance_json",
                     ddl="ALTER TABLE workflow_runs ADD COLUMN performance_json JSONB",
                 )
+                self._ensure_column(
+                    cursor,
+                    table_name="workflow_runs",
+                    column_name="conversation_status",
+                    ddl="ALTER TABLE workflow_runs ADD COLUMN conversation_status TEXT NOT NULL DEFAULT 'received'",
+                )
+                self._ensure_column(
+                    cursor,
+                    table_name="workflow_runs",
+                    column_name="user_decision",
+                    ddl="ALTER TABLE workflow_runs ADD COLUMN user_decision TEXT",
+                )
+                self._ensure_column(
+                    cursor,
+                    table_name="workflow_runs",
+                    column_name="proposal_state_json",
+                    ddl="ALTER TABLE workflow_runs ADD COLUMN proposal_state_json JSONB",
+                )
             connection.commit()
 
     def ping(self) -> dict[str, object]:
@@ -186,7 +207,7 @@ class PostgresOperationalStore:
                         last_status = EXCLUDED.last_status,
                         last_failure_stage = NULL,
                         updated_at = EXCLUDED.updated_at,
-                        metadata_json = EXCLUDED.metadata_json
+                        metadata_json = workflow_threads.metadata_json || EXCLUDED.metadata_json
                     """,
                     (
                         thread_id,
@@ -293,7 +314,7 @@ class PostgresOperationalStore:
         with psycopg.connect(self._dsn, row_factory=dict_row) as connection:
             row = connection.execute(
                 """
-                SELECT thread_id, user_id, chat_id, session_id, last_request_id, last_status, last_failure_stage, updated_at
+                SELECT thread_id, user_id, chat_id, session_id, last_request_id, last_status, last_failure_stage, updated_at, metadata_json
                 FROM workflow_threads
                 WHERE thread_id = %s
                 """,
@@ -310,6 +331,16 @@ class PostgresOperationalStore:
             "last_status": str(row["last_status"]),
             "last_failure_stage": row["last_failure_stage"],
             "updated_at": _parse_timestamp(row["updated_at"]).isoformat(),
+            "active_proposal": (
+                None
+                if not isinstance(row.get("metadata_json"), dict)
+                else row["metadata_json"].get("active_proposal")
+            ),
+            "last_user_decision": (
+                None
+                if not isinstance(row.get("metadata_json"), dict)
+                else row["metadata_json"].get("last_user_decision")
+            ),
         }
 
     def record_run(
@@ -325,6 +356,9 @@ class PostgresOperationalStore:
         last_observation: dict[str, object] | None,
         agent_steps: list[dict[str, object]] | None,
         performance: dict[str, object] | None,
+        conversation_status: str,
+        user_decision: str | None,
+        pending_proposal: dict[str, object] | None,
         success: bool,
         failed_stage: str | None,
         failure_message: str | None,
@@ -350,7 +384,7 @@ class PostgresOperationalStore:
                         envelope.request.chat_id,
                         envelope.session.session_id,
                         envelope.request.request_id,
-                        "success" if success else "failed",
+                        conversation_status if success else "failed",
                         failed_stage,
                         now,
                         Jsonb(
@@ -362,6 +396,8 @@ class PostgresOperationalStore:
                                 "last_mode": envelope.mode.value,
                                 "agent_reasoning_summary": agent_reasoning_summary,
                                 "last_performance": performance,
+                                "active_proposal": pending_proposal,
+                                "last_user_decision": user_decision,
                                 }
                             )
                         ),
@@ -384,11 +420,14 @@ class PostgresOperationalStore:
                         last_observation_json,
                         agent_steps_json,
                         performance_json,
+                        conversation_status,
+                        user_decision,
+                        proposal_state_json,
                         selections_json,
                         cart_results_json,
                         notification_payload_json,
                         recorded_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         thread_id,
@@ -404,6 +443,9 @@ class PostgresOperationalStore:
                         None if last_observation is None else Jsonb(_json_ready(last_observation)),
                         None if agent_steps is None else Jsonb(_json_ready(agent_steps)),
                         None if performance is None else Jsonb(_json_ready(performance)),
+                        conversation_status,
+                        user_decision,
+                        None if pending_proposal is None else Jsonb(_json_ready(pending_proposal)),
                         Jsonb(_json_ready([asdict(selection) for selection in selections])),
                         Jsonb(_json_ready([asdict(result) for result in cart_results])),
                         None if notification_payload is None else Jsonb(_json_ready(asdict(notification_payload))),
@@ -411,7 +453,7 @@ class PostgresOperationalStore:
                     ),
                 )
 
-                if success and cart_results:
+                if conversation_status == "completed" and success and cart_results:
                     cursor.execute(
                         "DELETE FROM current_cart_snapshot_items WHERE user_id = %s",
                         (envelope.request.user_id,),
@@ -467,11 +509,12 @@ class PostgresOperationalStore:
                             ),
                         )
 
-                for selection in selections:
-                    cursor.execute(
-                        """
-                        INSERT INTO recent_session_signals (
-                            thread_id,
+                if conversation_status == "completed":
+                    for selection in selections:
+                        cursor.execute(
+                            """
+                            INSERT INTO recent_session_signals (
+                                thread_id,
                             user_id,
                             request_id,
                             product_id,
@@ -479,15 +522,15 @@ class PostgresOperationalStore:
                             noted_at
                         ) VALUES (%s, %s, %s, %s, %s, %s)
                         """,
-                        (
-                            thread_id,
-                            envelope.request.user_id,
-                            envelope.request.request_id,
-                            selection.candidate.product_id,
-                            "preferred",
-                            now,
-                        ),
-                    )
+                            (
+                                thread_id,
+                                envelope.request.user_id,
+                                envelope.request.request_id,
+                                selection.candidate.product_id,
+                                "preferred",
+                                now,
+                            ),
+                        )
             connection.commit()
 
     @staticmethod

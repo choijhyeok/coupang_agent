@@ -83,6 +83,18 @@ class TelegramBotApiClient:
     def send_message(self, *, chat_id: str, text: str) -> dict[str, Any]:
         return self._post("sendMessage", {"chat_id": chat_id, "text": text})
 
+    def send_photo(
+        self,
+        *,
+        chat_id: str,
+        photo: str,
+        caption: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, object] = {"chat_id": chat_id, "photo": photo}
+        if caption:
+            payload["caption"] = caption
+        return self._post("sendPhoto", payload)
+
     def _post(self, method: str, payload: dict[str, object]) -> dict[str, Any]:
         encoded = urllib.parse.urlencode(payload).encode("utf-8")
         request = urllib.request.Request(
@@ -141,6 +153,17 @@ class TelegramPollingIntakeService:
         "쌀",
         "물티슈",
     }
+    _FOLLOW_UP_REPLY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+        ("cancel", re.compile(r"^(취소|그만|중단)(해줘)?$")),
+        ("next", re.compile(r"^(다른\s*거|다른상품|다른 상품)(\s*보여줘|\s*줘)?$")),
+        ("reject", re.compile(r"^(아니|아니야|별로|말고)(\s*담아줘)?$")),
+        (
+            "confirm",
+            re.compile(
+                r"^(ㅇㅇ|응|네|예|좋아|좋아요|그래|그거|이걸로|진행해줘|담아줘|넣어줘)(\s*담아줘)?$"
+            ),
+        ),
+    )
 
     def __init__(
         self,
@@ -151,6 +174,16 @@ class TelegramPollingIntakeService:
         self._repository = repository
 
     def parse_message(self, *, user_id: str, chat_id: str, text: str) -> ShoppingRequest:
+        stripped_text = text.strip()
+        if self.classify_follow_up_message(stripped_text) is not None:
+            return ShoppingRequest(
+                user_id=user_id,
+                chat_id=chat_id,
+                items=[],
+                raw_text=stripped_text,
+                request_id=f"telegram-request-{uuid4()}",
+                received_at=datetime.now(UTC),
+            )
         normalized_text = self._normalize_message_text(text)
         item_fragments = self._split_item_fragments(normalized_text)
         items = [self._parse_item_fragment(fragment) for fragment in item_fragments]
@@ -320,6 +353,7 @@ class TelegramPollingIntakeService:
                 "chat_id": inbound.chat_id,
                 "user_id": inbound.user_id,
                 "session_id": session.session_id,
+                "follow_up_reply": self.classify_follow_up_message(inbound.text),
             },
         )
 
@@ -389,6 +423,16 @@ class TelegramPollingIntakeService:
         if self._TRAILING_SEPARATOR_PATTERN.search(core):
             raise TelegramIntakeError("마지막 상품명 뒤에는 연결어 없이 요청을 끝내주세요.")
         return core
+
+    @classmethod
+    def classify_follow_up_message(cls, text: str) -> str | None:
+        normalized = re.sub(r"\s+", "", text.strip().lower())
+        if not normalized:
+            return None
+        for reply_kind, pattern in cls._FOLLOW_UP_REPLY_PATTERNS:
+            if pattern.fullmatch(normalized):
+                return reply_kind
+        return None
 
     def _split_item_fragments(self, text: str) -> list[str]:
         fragments = [part.strip(" ,") for part in re.split(r"\s*(?:\n|;| 그리고 )\s*", text) if part.strip(" ,")]

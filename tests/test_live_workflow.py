@@ -34,6 +34,7 @@ def candidate_source(request: ShoppingRequest) -> dict[str, list[ProductCandidat
                 rating=3.8,
                 review_count=19,
                 product_url=f"https://www.coupang.com/vp/products/{item.name}-cheap",
+                image_url=f"https://images.example.com/{item.name}-cheap.jpg",
             ),
             ProductCandidate(
                 product_id=f"{item.name}-balanced",
@@ -42,6 +43,7 @@ def candidate_source(request: ShoppingRequest) -> dict[str, list[ProductCandidat
                 rating=4.8,
                 review_count=1800,
                 product_url=f"https://www.coupang.com/vp/products/{item.name}-balanced",
+                image_url=f"https://images.example.com/{item.name}-balanced.jpg",
             ),
             ProductCandidate(
                 product_id=f"{item.name}-premium",
@@ -50,6 +52,7 @@ def candidate_source(request: ShoppingRequest) -> dict[str, list[ProductCandidat
                 rating=4.9,
                 review_count=900,
                 product_url=f"https://www.coupang.com/vp/products/{item.name}-premium",
+                image_url=f"https://images.example.com/{item.name}-premium.jpg",
             ),
         ]
         for item in request.items
@@ -92,6 +95,23 @@ class RaisingSender:
         raise RuntimeError("Telegram delivery failed")
 
 
+class DeliveryRecorder:
+    def __init__(self) -> None:
+        self.messages: list[tuple[str, str]] = []
+        self.photos: list[tuple[str, str, str | None]] = []
+
+    def send_message(self, *, chat_id: str, text: str) -> None:
+        self.messages.append((chat_id, text))
+
+    def send_photo(self, *, chat_id: str, photo: str, caption: str | None = None) -> None:
+        self.photos.append((chat_id, photo, caption))
+
+
+class FailingShoppingAgent:
+    def run(self, **kwargs):
+        raise AssertionError("shopping agent should not run before confirmation")
+
+
 class LiveWorkflowTests(unittest.TestCase):
     def build_envelope(self, *, request_id: str, text: str) -> ShoppingRequestEnvelope:
         request = ShoppingRequest(
@@ -128,83 +148,141 @@ class LiveWorkflowTests(unittest.TestCase):
             message_id=1,
             raw_text=text,
             raw_update={"message": {"text": text}},
-            metadata={"session_id": "telegram-session:telegram-chat:telegram:test-user"},
+            metadata={
+                "session_id": "telegram-session:telegram-chat:telegram:test-user",
+                "follow_up_reply": TelegramPollingIntakeService.classify_follow_up_message(text),
+            },
         )
 
-    def test_live_workflow_persists_state_and_restores_context_for_same_thread(self) -> None:
-        delivered_messages: list[tuple[str, str]] = []
-
-        def sender(chat_id: str, text: str) -> None:
-            delivered_messages.append((chat_id, text))
-
+    def test_live_workflow_requires_confirmation_before_cart_execution(self) -> None:
+        recorder = DeliveryRecorder()
         store = InMemoryOperationalStore()
         planner = AzureOpenAIPlanner(endpoint=None, api_key=None, deployment=None)
         workflow = CoupangCartAgentLiveWorkflow(
             candidate_source=candidate_source,
             cart_service=SuccessCartService(),
-            notification_service=RetryingNotificationService(sender=sender, max_attempts=1),
+            notification_service=RetryingNotificationService(sender=recorder, max_attempts=1),
             operational_store=store,
             agent_planner=planner,
+            shopping_agent=FailingShoppingAgent(),
             checkpointer=InMemorySaver(),
         )
 
-        first_result = workflow.run_envelope(
-            self.build_envelope(request_id="req-1", text="양파 1개 담아줘")
-        )
-        second_result = workflow.run_envelope(
-            self.build_envelope(request_id="req-2", text="양파 1개 다시 담아줘")
-        )
+        result = workflow.run_envelope(self.build_envelope(request_id="req-1", text="양파 1개 담아줘"))
 
-        self.assertTrue(first_result.success)
-        self.assertTrue(second_result.success)
-        self.assertEqual(len(store.runs), 2)
-        self.assertEqual(store.runs[-1]["success"], True)
+        self.assertTrue(result.success)
+        self.assertEqual(result.cart_results, [])
+        self.assertEqual(store.runs[-1]["conversation_status"], "awaiting_user_confirmation")
         persisted_state = workflow.get_persisted_state(
             thread_id="telegram-session:telegram-chat:telegram:test-user"
         )
         self.assertEqual(persisted_state["thread_id"], "telegram-session:telegram-chat:telegram:test-user")
-        self.assertIn("Prior purchases available", persisted_state["agent_plan"]["operator_note"])
-        self.assertEqual(len(delivered_messages), 2)
-        self.assertIn("장바구니 담기를 완료했습니다.", delivered_messages[-1][1])
-        self.assertIn("agent_plan", second_result.performance["timings_ms"])
-        self.assertIn("notify", second_result.performance["timings_ms"])
-        self.assertEqual(store.runs[-1]["performance"]["counts"]["planner_call_count"], 1)
+        self.assertEqual(persisted_state["conversation_status"], "awaiting_user_confirmation")
+        self.assertIn("selected_candidate", persisted_state["pending_proposal"])
+        self.assertEqual(len(recorder.photos), 1)
+        self.assertIn("추천 상품을 찾았습니다.", recorder.messages[-1][1])
+        self.assertEqual(store.current_cart_snapshot_by_user, {})
 
-    def test_live_workflow_reports_cart_failure_and_persists_failure_state(self) -> None:
-        delivered_messages: list[tuple[str, str]] = []
-
-        def sender(chat_id: str, text: str) -> None:
-            delivered_messages.append((chat_id, text))
-
+    def test_live_workflow_executes_confirmed_proposal_and_restores_context_for_same_thread(self) -> None:
+        recorder = DeliveryRecorder()
         store = InMemoryOperationalStore()
         workflow = CoupangCartAgentLiveWorkflow(
             candidate_source=candidate_source,
-            cart_service=FailureCartService(),
-            notification_service=RetryingNotificationService(sender=sender, max_attempts=1),
+            cart_service=SuccessCartService(),
+            notification_service=RetryingNotificationService(sender=recorder, max_attempts=1),
             operational_store=store,
             agent_planner=AzureOpenAIPlanner(endpoint=None, api_key=None, deployment=None),
             checkpointer=InMemorySaver(),
         )
 
-        result = workflow.run_envelope(self.build_envelope(request_id="req-fail", text="양파 1개 담아줘"))
+        first_result = workflow.run_envelope(self.build_envelope(request_id="req-1", text="양파 1개 담아줘"))
+        second_result = workflow.run_envelope(self.build_envelope(request_id="req-2", text="ㅇㅇ 담아줘"))
+
+        self.assertTrue(first_result.success)
+        self.assertTrue(second_result.success)
+        self.assertEqual(len(store.runs), 2)
+        self.assertEqual(store.runs[-1]["conversation_status"], "completed")
+        self.assertEqual(store.runs[-1]["success"], True)
+        persisted_state = workflow.get_persisted_state(
+            thread_id="telegram-session:telegram-chat:telegram:test-user"
+        )
+        self.assertEqual(persisted_state["conversation_status"], "completed")
+        self.assertIn("agent_plan", persisted_state)
+        self.assertEqual(len(recorder.photos), 1)
+        self.assertIn("장바구니 담기를 완료했습니다.", recorder.messages[-1][1])
+        self.assertNotIn("agent_plan", second_result.performance["timings_ms"])
+        self.assertIn("notify", second_result.performance["timings_ms"])
+        self.assertEqual(store.runs[0]["performance"]["counts"]["planner_call_count"], 1)
+
+    def test_live_workflow_shows_next_candidate_without_cart_mutation(self) -> None:
+        recorder = DeliveryRecorder()
+        store = InMemoryOperationalStore()
+        workflow = CoupangCartAgentLiveWorkflow(
+            candidate_source=candidate_source,
+            cart_service=SuccessCartService(),
+            notification_service=RetryingNotificationService(sender=recorder, max_attempts=1),
+            operational_store=store,
+            agent_planner=AzureOpenAIPlanner(endpoint=None, api_key=None, deployment=None),
+            checkpointer=InMemorySaver(),
+        )
+
+        workflow.run_envelope(self.build_envelope(request_id="req-1", text="양파 1개 담아줘"))
+        result = workflow.run_envelope(self.build_envelope(request_id="req-2", text="다른 거 보여줘"))
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.cart_results, [])
+        self.assertEqual(store.runs[-1]["conversation_status"], "awaiting_user_confirmation")
+        self.assertEqual(store.current_cart_snapshot_by_user, {})
+        self.assertEqual(len(recorder.photos), 2)
+        self.assertIn("추천 상품을 찾았습니다.", recorder.messages[-1][1])
+
+    def test_live_workflow_reports_cart_failure_and_preserves_pending_proposal(self) -> None:
+        recorder = DeliveryRecorder()
+        store = InMemoryOperationalStore()
+        workflow = CoupangCartAgentLiveWorkflow(
+            candidate_source=candidate_source,
+            cart_service=FailureCartService(),
+            notification_service=RetryingNotificationService(sender=recorder, max_attempts=1),
+            operational_store=store,
+            agent_planner=AzureOpenAIPlanner(endpoint=None, api_key=None, deployment=None),
+            checkpointer=InMemorySaver(),
+        )
+
+        workflow.run_envelope(self.build_envelope(request_id="req-proposal", text="양파 1개 담아줘"))
+        result = workflow.run_envelope(self.build_envelope(request_id="req-fail", text="ㅇㅇ 담아줘"))
 
         self.assertFalse(result.success)
         self.assertEqual(result.failed_stage, "product_page")
         self.assertEqual(store.runs[-1]["failed_stage"], "product_page")
-        self.assertIn("장바구니 담기에 실패했습니다.", delivered_messages[0][1])
+        self.assertEqual(store.runs[-1]["conversation_status"], "awaiting_user_confirmation")
+        self.assertTrue(store.runs[-1]["pending_proposal"])
+        self.assertIn("장바구니 담기에 실패했습니다.", recorder.messages[-1][1])
 
     def test_live_workflow_preserves_root_failure_stage_when_notification_send_fails(self) -> None:
+        class FailAfterFirstNotification:
+            def __init__(self) -> None:
+                self.count = 0
+
+            def send_message(self, *, chat_id: str, text: str) -> None:
+                self.count += 1
+                if self.count >= 2:
+                    raise RuntimeError("Telegram delivery failed")
+
+            def send_photo(self, *, chat_id: str, photo: str, caption: str | None = None) -> None:
+                return None
+
         store = InMemoryOperationalStore()
         workflow = CoupangCartAgentLiveWorkflow(
             candidate_source=candidate_source,
             cart_service=FailureCartService(),
-            notification_service=RetryingNotificationService(sender=RaisingSender(), max_attempts=1),
+            notification_service=RetryingNotificationService(sender=FailAfterFirstNotification(), max_attempts=1),
             operational_store=store,
             agent_planner=AzureOpenAIPlanner(endpoint=None, api_key=None, deployment=None),
             checkpointer=InMemorySaver(),
         )
 
-        result = workflow.run_envelope(self.build_envelope(request_id="req-notify-fail", text="양파 1개 담아줘"))
+        workflow.run_envelope(self.build_envelope(request_id="req-proposal", text="양파 1개 담아줘"))
+        result = workflow.run_envelope(self.build_envelope(request_id="req-notify-fail", text="ㅇㅇ 담아줘"))
 
         self.assertFalse(result.success)
         self.assertEqual(result.failed_stage, "product_page")

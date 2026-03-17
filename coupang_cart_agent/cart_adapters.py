@@ -853,7 +853,7 @@ class PlaywrightCoupangCartPage:
 
     def _is_access_denied(self, page: Page | None = None) -> bool:
         active_page = page or self._page_object()
-        if "access denied" in active_page.title().lower():
+        if "access denied" in self._safe_title(active_page).lower():
             return True
         try:
             body = active_page.locator("body").inner_text(timeout=2000)
@@ -867,7 +867,7 @@ class PlaywrightCoupangCartPage:
         url = active_page.url.lower()
         if "login.coupang.com" in url or "/login/" in url:
             return True
-        title = active_page.title().lower()
+        title = self._safe_title(active_page).lower()
         return "login" in title and "coupang" in title
 
     def _is_security_challenge(self, page: Page | None = None) -> bool:

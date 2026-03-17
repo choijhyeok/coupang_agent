@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+from statistics import median
 import time
 from typing import Protocol, TypedDict
 
@@ -36,8 +37,13 @@ from .contracts import (
 )
 from .integration import IntegrationRunResult
 from .live_browser_agent import CoupangLiveBrowserShoppingAgent
-from .notifications import build_failure_notification_payload, build_success_notification_payload
-from .selection import HeuristicProductSelectionService
+from .notifications import (
+    build_cancelled_notification_payload,
+    build_failure_notification_payload,
+    build_proposal_notification_payload,
+    build_success_notification_payload,
+)
+from .selection import HeuristicProductSelectionService, score_candidate, summarize_selection_reason
 from .services import CoupangCartService, NotificationService
 
 
@@ -51,6 +57,9 @@ class LiveWorkflowState(TypedDict, total=False):
     candidates_by_item: dict[str, list[dict[str, object]]]
     selections: list[dict[str, object]]
     cart_results: list[dict[str, object]]
+    conversation_status: str
+    user_decision: str | None
+    pending_proposal: dict[str, object]
     agent_steps: list[dict[str, object]]
     agent_reasoning_summary: str
     last_observation: dict[str, object]
@@ -87,6 +96,9 @@ class OperationalStore(Protocol):
         last_observation: dict[str, object] | None,
         agent_steps: list[dict[str, object]] | None,
         performance: dict[str, object] | None,
+        conversation_status: str,
+        user_decision: str | None,
+        pending_proposal: dict[str, object] | None,
         success: bool,
         failed_stage: str | None,
         failure_message: str | None,
@@ -112,14 +124,17 @@ class InMemoryOperationalStore:
         self.runs: list[dict[str, object]] = []
 
     def record_intake(self, *, thread_id: str, envelope: ShoppingRequestEnvelope) -> None:
+        prior = self.thread_context_by_id.get(thread_id, {})
         self.thread_context_by_id[thread_id] = {
             "thread_id": thread_id,
             "user_id": envelope.request.user_id,
             "chat_id": envelope.request.chat_id,
             "session_id": envelope.session.session_id,
             "last_request_id": envelope.request.request_id,
-            "last_status": "received",
+            "last_status": str(prior.get("last_status", "received")),
             "last_failure_stage": None,
+            "active_proposal": prior.get("active_proposal"),
+            "last_user_decision": prior.get("last_user_decision"),
             "updated_at": envelope.request.received_at.isoformat(),
         }
 
@@ -151,6 +166,9 @@ class InMemoryOperationalStore:
         last_observation: dict[str, object] | None,
         agent_steps: list[dict[str, object]] | None,
         performance: dict[str, object] | None,
+        conversation_status: str,
+        user_decision: str | None,
+        pending_proposal: dict[str, object] | None,
         success: bool,
         failed_stage: str | None,
         failure_message: str | None,
@@ -169,6 +187,9 @@ class InMemoryOperationalStore:
                 "last_observation": last_observation,
                 "agent_steps": list(agent_steps or []),
                 "performance": dict(performance or {}),
+                "conversation_status": conversation_status,
+                "user_decision": user_decision,
+                "pending_proposal": None if pending_proposal is None else dict(pending_proposal),
                 "selections": [asdict(selection) for selection in selections],
                 "cart_results": [asdict(result) for result in cart_results],
                 "recorded_at": now,
@@ -180,11 +201,13 @@ class InMemoryOperationalStore:
             "chat_id": envelope.request.chat_id,
             "session_id": envelope.session.session_id,
             "last_request_id": envelope.request.request_id,
-            "last_status": "success" if success else "failed",
+            "last_status": conversation_status if success else "failed",
             "last_failure_stage": failed_stage,
+            "active_proposal": None if conversation_status == "completed" else pending_proposal,
+            "last_user_decision": user_decision,
             "updated_at": now,
         }
-        if success:
+        if conversation_status == "completed" and success:
             snapshot_items: list[dict[str, object]] = []
             for result in cart_results:
                 candidate = result.selected_product.candidate
@@ -215,15 +238,16 @@ class InMemoryOperationalStore:
                     prior.last_purchased_at = datetime.now(UTC)
             self.current_cart_snapshot_by_user[envelope.request.user_id] = snapshot_items
 
-        signals = self.recent_signals_by_thread.setdefault(thread_id, [])
-        for selection in selections:
-            signals.append(
-                SessionSelectionSignal(
-                    product_id=selection.candidate.product_id,
-                    signal="preferred",
-                    noted_at=datetime.now(UTC),
+        if conversation_status == "completed":
+            signals = self.recent_signals_by_thread.setdefault(thread_id, [])
+            for selection in selections:
+                signals.append(
+                    SessionSelectionSignal(
+                        product_id=selection.candidate.product_id,
+                        signal="preferred",
+                        noted_at=datetime.now(UTC),
+                    )
                 )
-            )
 
 
 class CoupangCartAgentLiveWorkflow:
@@ -264,6 +288,9 @@ class CoupangCartAgentLiveWorkflow:
                 "candidates_by_item": {},
                 "selections": [],
                 "cart_results": [],
+                "conversation_status": "received",
+                "user_decision": None,
+                "pending_proposal": {},
                 "agent_steps": [],
                 "agent_reasoning_summary": "",
                 "last_observation": {},
@@ -311,9 +338,52 @@ class CoupangCartAgentLiveWorkflow:
             thread_id=thread_id,
         )
         thread_context = self._operational_store.load_thread_context(thread_id=thread_id)
+        pending_proposal = _coerce_pending_proposal(
+            state.get("pending_proposal"),
+            thread_context.get("active_proposal"),
+        )
+        user_decision = _classify_user_decision(
+            envelope=_envelope_from_dict(state["request_envelope"]),
+            request=request,
+            has_pending_proposal=bool(pending_proposal),
+        )
+        if user_decision == "confirm" and not pending_proposal:
+            failed_stage = "confirmation"
+            failure_message = "확인할 추천안이 없습니다. 다시 상품을 요청해주세요."
+            conversation_status = "cancelled"
+        elif user_decision in {"reject", "next"} and not pending_proposal:
+            failed_stage = "proposal"
+            failure_message = "다시 보여드릴 추천안이 없습니다. 상품명을 다시 보내주세요."
+            conversation_status = "cancelled"
+        elif user_decision == "cancel" and not pending_proposal:
+            failed_stage = None
+            failure_message = None
+            conversation_status = "cancelled"
+        elif user_decision == "new_request":
+            failed_stage = None
+            failure_message = None
+            conversation_status = "proposal_pending"
+        elif user_decision == "confirm":
+            failed_stage = None
+            failure_message = None
+            conversation_status = "executing_cart_action"
+        elif user_decision == "cancel":
+            failed_stage = None
+            failure_message = None
+            conversation_status = "cancelled"
+        else:
+            failed_stage = None
+            failure_message = None
+            conversation_status = "proposal_pending" if pending_proposal else "received"
         return {
             "selection_context": _selection_context_to_dict(selection_context),
             "thread_context": thread_context,
+            "pending_proposal": pending_proposal,
+            "user_decision": user_decision,
+            "conversation_status": conversation_status,
+            "success": conversation_status in {"proposal_pending", "cancelled"},
+            "failed_stage": failed_stage,
+            "failure_message": failure_message,
             "performance": _updated_workflow_performance(
                 state.get("performance"),
                 stage="load_context",
@@ -322,7 +392,7 @@ class CoupangCartAgentLiveWorkflow:
         }
 
     def _agent_plan_node(self, state: LiveWorkflowState) -> dict[str, object]:
-        if state.get("failed_stage"):
+        if state.get("failed_stage") or state.get("user_decision") != "new_request":
             return {}
         started = time.perf_counter()
         request = _shopping_request_from_dict(state["request"])
@@ -346,7 +416,13 @@ class CoupangCartAgentLiveWorkflow:
         }
 
     def _browser_shop_node(self, state: LiveWorkflowState) -> dict[str, object]:
-        if state.get("failed_stage") or self._shopping_agent is None:
+        # HOW-35 switches the live path to proposal-first UX. Keep the legacy browser
+        # shopping agent wired but never let it mutate cart state before confirmation.
+        if (
+            state.get("failed_stage")
+            or self._shopping_agent is None
+            or state.get("user_decision") != "legacy_direct_execute"
+        ):
             return {}
         request = _shopping_request_from_dict(state["request"])
         plan = _agent_plan_from_dict(state["agent_plan"])
@@ -400,7 +476,7 @@ class CoupangCartAgentLiveWorkflow:
         }
 
     def _load_candidates_node(self, state: LiveWorkflowState) -> dict[str, object]:
-        if state.get("failed_stage") or state.get("cart_results"):
+        if state.get("failed_stage") or state.get("cart_results") or state.get("user_decision") != "new_request":
             return {}
         request = _shopping_request_from_dict(state["request"])
         started = time.perf_counter()
@@ -429,24 +505,58 @@ class CoupangCartAgentLiveWorkflow:
             }
 
     def _select_products_node(self, state: LiveWorkflowState) -> dict[str, object]:
-        if state.get("failed_stage") or state.get("selections"):
+        if state.get("failed_stage"):
+            return {}
+        user_decision = state.get("user_decision")
+        if user_decision in {"confirm", "cancel"}:
+            return {}
+        if user_decision in {"reject", "next"}:
+            pending_proposal = _coerce_pending_proposal(state.get("pending_proposal"))
+            if not pending_proposal:
+                return {}
+            next_index = int(pending_proposal.get("candidate_index", 0)) + 1
+            candidates = [dict(candidate) for candidate in pending_proposal.get("candidates", [])]
+            if next_index >= len(candidates):
+                return {
+                    "conversation_status": "cancelled",
+                    "pending_proposal": {},
+                    "success": True,
+                    "failure_message": "더 보여드릴 추천 후보가 없어 이번 요청은 취소했습니다.",
+                }
+            selected_candidate = dict(candidates[next_index])
+            selected_candidate["selection_reason"] = str(
+                selected_candidate.get("selection_reason") or pending_proposal.get("summary") or ""
+            )
+            updated_pending = dict(pending_proposal)
+            updated_pending["candidate_index"] = next_index
+            updated_pending["selected_candidate"] = selected_candidate
+            updated_pending["summary"] = _summarize_proposal(selected_candidate)
+            updated_pending["image_url"] = selected_candidate.get("image_url")
+            return {
+                "selections": [_selected_product_to_dict(_selected_product_from_candidate_dict(selected_candidate))],
+                "pending_proposal": updated_pending,
+                "conversation_status": "awaiting_user_confirmation",
+                "success": True,
+            }
+        if state.get("selections"):
             return {}
         request = _shopping_request_from_dict(state["request"])
         selection_context = _selection_context_from_dict(state.get("selection_context", {}))
         started = time.perf_counter()
-        service = HeuristicProductSelectionService(
-            context_store=StaticSelectionContextStore(selection_context)
-        )
         try:
-            selections = service.select_products(
-                request,
-                {
+            proposal = _build_pending_proposal(
+                request=request,
+                selection_context=selection_context,
+                candidates_by_item={
                     item_name: [_product_candidate_from_dict(candidate) for candidate in values]
                     for item_name, values in state.get("candidates_by_item", {}).items()
                 },
             )
             return {
-                "selections": [asdict(selection) for selection in selections],
+                "selections": [_selected_product_to_dict(_selected_product_from_candidate_dict(proposal["selected_candidate"]))],
+                "pending_proposal": proposal,
+                "conversation_status": "awaiting_user_confirmation",
+                "success": True,
                 "performance": _updated_workflow_performance(
                     state.get("performance"),
                     stage="select_products",
@@ -465,9 +575,15 @@ class CoupangCartAgentLiveWorkflow:
             }
 
     def _add_to_cart_node(self, state: LiveWorkflowState) -> dict[str, object]:
-        if state.get("failed_stage") or state.get("cart_results"):
+        if state.get("failed_stage") or state.get("cart_results") or state.get("user_decision") != "confirm":
             return {}
-        selections = [_selected_product_from_dict(raw) for raw in state.get("selections", [])]
+        pending_proposal = _coerce_pending_proposal(state.get("pending_proposal"))
+        if not pending_proposal:
+            return {
+                "failed_stage": "confirmation",
+                "failure_message": "확인할 추천안이 없습니다. 다시 상품을 요청해주세요.",
+            }
+        selections = [_selected_product_from_candidate_dict(dict(pending_proposal["selected_candidate"]))]
         started = time.perf_counter()
         try:
             results = self._cart_service.add_products(selections)
@@ -478,6 +594,7 @@ class CoupangCartAgentLiveWorkflow:
                     stage="add_to_cart",
                     elapsed_seconds=time.perf_counter() - started,
                 ),
+                "conversation_status": "awaiting_user_confirmation",
                 "failed_stage": "cart_add",
                 "failure_message": str(exc),
             }
@@ -485,12 +602,15 @@ class CoupangCartAgentLiveWorkflow:
         first_failure = next((result for result in results if not result.success), None)
         return {
             "cart_results": [_cart_result_to_dict(result) for result in results],
+            "selections": [_selected_product_to_dict(selection) for selection in selections],
+            "pending_proposal": {} if first_failure is None else pending_proposal,
             "performance": _updated_workflow_performance(
                 state.get("performance"),
                 stage="add_to_cart",
                 elapsed_seconds=time.perf_counter() - started,
             ),
             "success": first_failure is None,
+            "conversation_status": "completed" if first_failure is None else "awaiting_user_confirmation",
             "failed_stage": None if first_failure is None else first_failure.stage.value,
             "failure_message": None if first_failure is None else first_failure.message,
         }
@@ -501,14 +621,7 @@ class CoupangCartAgentLiveWorkflow:
         cart_results = [_cart_result_from_dict(raw) for raw in state.get("cart_results", [])]
         payload = None
 
-        if state.get("failed_stage") and not cart_results:
-            payload = build_failure_notification_payload(
-                chat_id=request.chat_id,
-                stage=str(state["failed_stage"]),
-                reason="통합 워크플로우가 실패했습니다.",
-                detail=str(state.get("failure_message", "")),
-            )
-        elif cart_results and any(not result.success for result in cart_results):
+        if cart_results and any(not result.success for result in cart_results):
             failure = next(result for result in cart_results if not result.success)
             failure_reason = (
                 "장바구니 담기에 실패했습니다."
@@ -520,6 +633,37 @@ class CoupangCartAgentLiveWorkflow:
                 stage=failure.stage.value,
                 reason=failure_reason,
                 detail=failure.message,
+            )
+        elif state.get("conversation_status") == "awaiting_user_confirmation":
+            pending_proposal = _coerce_pending_proposal(state.get("pending_proposal"))
+            if pending_proposal:
+                selected_candidate = dict(pending_proposal.get("selected_candidate", {}))
+                payload = build_proposal_notification_payload(
+                    chat_id=request.chat_id,
+                    summary=str(pending_proposal.get("summary", "")),
+                    candidate=selected_candidate,
+                    alternatives=[
+                        dict(candidate)
+                        for index, candidate in enumerate(pending_proposal.get("candidates", []))
+                        if index != int(pending_proposal.get("candidate_index", 0))
+                    ],
+                    image_url=(
+                        None
+                        if selected_candidate.get("image_url") in (None, "")
+                        else str(selected_candidate.get("image_url"))
+                    ),
+                )
+        elif state.get("conversation_status") == "cancelled":
+            payload = build_cancelled_notification_payload(
+                chat_id=request.chat_id,
+                summary=str(state.get("failure_message") or "이번 추천은 취소했습니다. 새 상품명을 보내주시면 다시 제안드릴게요."),
+            )
+        elif state.get("failed_stage") and not cart_results:
+            payload = build_failure_notification_payload(
+                chat_id=request.chat_id,
+                stage=str(state["failed_stage"]),
+                reason="통합 워크플로우가 실패했습니다.",
+                detail=str(state.get("failure_message", "")),
             )
         elif cart_results:
             notification_context = self._operational_store.load_notification_context(user_id=request.user_id)
@@ -607,11 +751,179 @@ class CoupangCartAgentLiveWorkflow:
                 stage="persist",
                 elapsed_seconds=time.perf_counter() - started,
             ),
+            conversation_status=str(state.get("conversation_status", "received")),
+            user_decision=(None if state.get("user_decision") is None else str(state.get("user_decision"))),
+            pending_proposal=_coerce_pending_proposal(state.get("pending_proposal")),
             success=bool(state.get("success", False)),
             failed_stage=state.get("failed_stage"),
             failure_message=state.get("failure_message"),
         )
         return {}
+
+
+def _coerce_pending_proposal(*values: object) -> dict[str, object]:
+    for value in values:
+        if isinstance(value, dict) and value:
+            return dict(value)
+    return {}
+
+
+def _classify_user_decision(
+    *,
+    envelope: ShoppingRequestEnvelope,
+    request: ShoppingRequest,
+    has_pending_proposal: bool,
+) -> str:
+    follow_up_reply = envelope.metadata.get("follow_up_reply")
+    if follow_up_reply in {"confirm", "reject", "next", "cancel"}:
+        return str(follow_up_reply)
+    if request.items:
+        return "new_request"
+    if has_pending_proposal:
+        return "confirm"
+    return "new_request"
+
+
+def _build_pending_proposal(
+    *,
+    request: ShoppingRequest,
+    selection_context: SelectionContext,
+    candidates_by_item: dict[str, list[ProductCandidate]],
+) -> dict[str, object]:
+    if not request.items:
+        raise ValueError("추천안을 만들 상품 요청이 없습니다.")
+    requested_item = request.items[0]
+    candidates = candidates_by_item.get(requested_item.name, [])
+    if len(candidates) < 1:
+        raise ValueError(f"{requested_item.name}에 대한 후보 상품이 없습니다.")
+    median_price_krw = float(median(candidate.price_krw for candidate in candidates))
+    ranked_candidates: list[dict[str, object]] = []
+    for candidate in sorted(
+        candidates,
+        key=lambda product: (
+            score_candidate(product, median_price_krw=median_price_krw, context=selection_context),
+            product.rating,
+            product.review_count,
+            -product.price_krw,
+        ),
+        reverse=True,
+    )[:3]:
+        score = score_candidate(candidate, median_price_krw=median_price_krw, context=selection_context)
+        ranked_candidates.append(
+            _proposal_candidate_to_dict(
+                candidate=candidate,
+                requested_item_name=requested_item.name,
+                quantity=requested_item.quantity,
+                score=score,
+                selection_reason=summarize_selection_reason(
+                    requested_item,
+                    candidate,
+                    score=score,
+                    median_price_krw=median_price_krw,
+                    context=selection_context,
+                ),
+                prior_purchase=_matching_prior_purchase(selection_context, candidate.product_id),
+            )
+        )
+    selected_candidate = dict(ranked_candidates[0])
+    return {
+        "request_id": request.request_id,
+        "request_item_name": requested_item.name,
+        "candidate_index": 0,
+        "selected_candidate": selected_candidate,
+        "candidates": ranked_candidates,
+        "summary": _summarize_proposal(selected_candidate),
+        "image_url": selected_candidate.get("image_url"),
+    }
+
+
+def _proposal_candidate_to_dict(
+    *,
+    candidate: ProductCandidate,
+    requested_item_name: str,
+    quantity: int,
+    score: float,
+    selection_reason: str,
+    prior_purchase: PriorPurchaseRecord | None,
+) -> dict[str, object]:
+    option_summary = _extract_option_summary(candidate.name, requested_item_name=requested_item_name)
+    return {
+        "request_item_name": requested_item_name,
+        "product_id": candidate.product_id,
+        "name": candidate.name,
+        "price_krw": candidate.price_krw,
+        "rating": candidate.rating,
+        "review_count": candidate.review_count,
+        "product_url": candidate.product_url,
+        "image_url": candidate.image_url,
+        "vendor": candidate.vendor,
+        "badges": list(candidate.badges),
+        "quantity": quantity,
+        "score": score,
+        "selection_reason": selection_reason,
+        "option_summary": option_summary,
+        "prior_purchase": (
+            None
+            if prior_purchase is None
+            else {
+                "product_id": prior_purchase.product_id,
+                "product_name": prior_purchase.product_name,
+                "purchase_count": prior_purchase.purchase_count,
+                "last_purchased_at": (
+                    None if prior_purchase.last_purchased_at is None else prior_purchase.last_purchased_at.isoformat()
+                ),
+            }
+        ),
+    }
+
+
+def _selected_product_from_candidate_dict(candidate: dict[str, object]) -> SelectedProduct:
+    return SelectedProduct(
+        request_item_name=str(candidate.get("request_item_name", "")),
+        candidate=_product_candidate_from_dict(candidate),
+        quantity=max(1, int(candidate.get("quantity", 1))),
+        selection_reason=str(candidate.get("selection_reason", "")),
+        score=float(candidate.get("score", 0.0)),
+        option_hints={},
+    )
+
+
+def _matching_prior_purchase(
+    selection_context: SelectionContext,
+    product_id: str,
+) -> PriorPurchaseRecord | None:
+    return next(
+        (record for record in selection_context.prior_purchases if record.product_id == product_id),
+        None,
+    )
+
+
+def _extract_option_summary(candidate_name: str, *, requested_item_name: str) -> str:
+    normalized_candidate = candidate_name.strip()
+    normalized_request = requested_item_name.strip()
+    if normalized_request and normalized_candidate.startswith(normalized_request):
+        suffix = normalized_candidate[len(normalized_request) :].strip(" ,-/")
+        if suffix:
+            return suffix[:60]
+    return normalized_candidate[:60]
+
+
+def _summarize_proposal(candidate: dict[str, object]) -> str:
+    fragments: list[str] = []
+    prior_purchase = candidate.get("prior_purchase")
+    if isinstance(prior_purchase, dict) and prior_purchase.get("product_name"):
+        fragments.append(
+            f"이전에 {prior_purchase['product_name']}을 {int(prior_purchase.get('purchase_count', 1))}회 구매하셨고"
+        )
+    vendor = str(candidate.get("vendor") or "").strip()
+    if vendor:
+        fragments.append(f"지금은 {vendor} {candidate['name']}이")
+    else:
+        fragments.append(f"지금은 {candidate['name']}이")
+    fragments.append(
+        f"{format(int(candidate.get('price_krw', 0)), ',')}원, 평점 {float(candidate.get('rating', 0.0)):.1f}, 리뷰 {int(candidate.get('review_count', 0)):,}개로 균형이 좋아 추천드립니다."
+    )
+    return " ".join(fragment for fragment in fragments if fragment)
 
 
 def _shopping_request_from_dict(raw: dict[str, object]) -> ShoppingRequest:
@@ -715,6 +1027,7 @@ def _product_candidate_from_dict(raw: dict[str, object]) -> ProductCandidate:
         rating=float(raw["rating"]),
         review_count=int(raw["review_count"]),
         product_url=str(raw["product_url"]),
+        image_url=(None if raw.get("image_url") in (None, "") else str(raw.get("image_url"))),
         vendor=(None if raw.get("vendor") in (None, "") else str(raw["vendor"])),
         badges=[str(item) for item in raw.get("badges", [])],
     )
@@ -728,6 +1041,7 @@ def _product_candidate_to_dict(candidate: ProductCandidate) -> dict[str, object]
         "rating": candidate.rating,
         "review_count": candidate.review_count,
         "product_url": candidate.product_url,
+        "image_url": candidate.image_url,
         "vendor": candidate.vendor,
         "badges": list(candidate.badges),
     }
@@ -796,6 +1110,7 @@ def _notification_payload_from_dict(raw: dict[str, object]) -> NotificationPaylo
         success=bool(raw["success"]),
         stage=str(raw["stage"]),
         summary=str(raw["summary"]),
+        kind=str(raw.get("kind", "result")),
         details=dict(raw.get("details", {})),
     )
 
@@ -806,6 +1121,7 @@ def _notification_payload_to_dict(payload: NotificationPayload) -> dict[str, obj
         "success": payload.success,
         "stage": payload.stage,
         "summary": payload.summary,
+        "kind": payload.kind,
         "details": dict(payload.details),
     }
 

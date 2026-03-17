@@ -98,6 +98,7 @@ def _build_live_candidate_source(*, config, fixture_path: str | None):
 def _build_synthetic_live_envelope(request: ShoppingRequest) -> ShoppingRequestEnvelope:
     session_id = f"telegram-session:{request.chat_id}:{request.user_id}"
     occurred_at = request.received_at if request.received_at.tzinfo is not None else request.received_at.replace(tzinfo=UTC)
+    follow_up_reply = TelegramPollingIntakeService.classify_follow_up_message(request.raw_text)
     return ShoppingRequestEnvelope(
         source="cli-live",
         mode=IntakeMode.LIVE,
@@ -115,7 +116,10 @@ def _build_synthetic_live_envelope(request: ShoppingRequest) -> ShoppingRequestE
         message_id=None,
         raw_text=request.raw_text,
         raw_update={},
-        metadata={"created_by": "integration-live-request"},
+        metadata={
+            "created_by": "integration-live-request",
+            "follow_up_reply": follow_up_reply,
+        },
     )
 
 

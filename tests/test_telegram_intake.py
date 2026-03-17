@@ -101,14 +101,14 @@ class TelegramIntakeTests(unittest.TestCase):
         self.assertIn("담아줘", str(context.exception))
 
     def test_parse_message_requires_product_name(self) -> None:
-        with self.assertRaises(TelegramIntakeError) as context:
-            self.service.parse_message(
-                user_id="telegram:5",
-                chat_id="chat-5",
-                text="담아줘",
-            )
+        request = self.service.parse_message(
+            user_id="telegram:5",
+            chat_id="chat-5",
+            text="담아줘",
+        )
 
-        self.assertIn("상품명", str(context.exception))
+        self.assertEqual(request.items, [])
+        self.assertEqual(request.raw_text, "담아줘")
 
     def test_parse_message_rejects_trailing_connector(self) -> None:
         with self.assertRaises(TelegramIntakeError) as context:
@@ -144,6 +144,7 @@ class TelegramIntakeTests(unittest.TestCase):
         self.assertEqual(result.envelope.mode, IntakeMode.LIVE)
         self.assertEqual(result.envelope.session.session_id, "telegram-session:654:telegram:321")
         self.assertEqual(result.envelope.metadata["session_id"], "telegram-session:654:telegram:321")
+        self.assertIsNone(result.envelope.metadata["follow_up_reply"])
 
     def test_handle_update_returns_user_facing_error_for_non_text_message(self) -> None:
         result = self.service.handle_update(
@@ -177,7 +178,7 @@ class TelegramIntakeTests(unittest.TestCase):
                         "date": 1710000000,
                         "from": {"id": 901},
                         "chat": {"id": 902},
-                        "text": "담아줘",
+                        "text": "",
                     },
                 }
             )
@@ -185,7 +186,7 @@ class TelegramIntakeTests(unittest.TestCase):
             self.assertIsNone(result.request)
             self.assertTrue(result.error_response_sent)
             self.assertEqual(client.sent_messages[0][0], "902")
-            self.assertIn("상품명", client.sent_messages[0][1])
+            self.assertIn("텍스트 메시지", client.sent_messages[0][1])
             sessions = repository.list_sessions()
             inbound_messages = repository.list_inbound_messages()
             self.assertEqual(len(sessions), 1)
@@ -193,6 +194,28 @@ class TelegramIntakeTests(unittest.TestCase):
             self.assertEqual(inbound_messages[0]["parse_status"], "rejected")
             self.assertEqual(inbound_messages[0]["workflow_status"], "rejected")
             self.assertEqual(inbound_messages[0]["error_message"], result.error_message)
+
+    def test_handle_update_persists_follow_up_reply_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repository = TelegramIntakeRepository(Path(tmp_dir) / "intake.sqlite3")
+            service = TelegramPollingIntakeService(repository=repository)
+
+            result = service.handle_update(
+                {
+                    "update_id": 1015,
+                    "message": {
+                        "message_id": 25,
+                        "date": 1710000030,
+                        "from": {"id": 707},
+                        "chat": {"id": 909},
+                        "text": "ㅇㅇ 담아줘",
+                    },
+                }
+            )
+
+            assert result.envelope is not None
+            self.assertEqual(result.request.items, [])
+            self.assertEqual(result.envelope.metadata["follow_up_reply"], "confirm")
 
     def test_handle_update_persists_session_and_envelope_for_valid_message(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -312,6 +335,21 @@ class TelegramIntakeTests(unittest.TestCase):
         self.assertEqual(result["id"], 1)
         self.assertIn("/bottest-token/getMe", captured_request["url"])
 
+    def test_bot_api_client_send_photo_uses_send_photo_method(self) -> None:
+        captured_request: dict[str, object] = {}
+
+        def fake_opener(request) -> _FakeHttpResponse:
+            captured_request["url"] = request.full_url
+            captured_request["body"] = request.data.decode("utf-8")
+            return _FakeHttpResponse({"ok": True, "result": {"message_id": 1}})
+
+        client = TelegramBotApiClient(token="test-token", opener=fake_opener)
+        result = client.send_photo(chat_id="22", photo="https://images.example.com/onion.jpg", caption="양파 추천")
+
+        self.assertEqual(result["result"]["message_id"], 1)
+        self.assertIn("/bottest-token/sendPhoto", captured_request["url"])
+        self.assertIn("photo=https%3A%2F%2Fimages.example.com%2Fonion.jpg", captured_request["body"])
+
     def test_poll_once_uses_live_mode_for_multiple_updates(self) -> None:
         client = _StubTelegramClient(
             updates=[
@@ -341,8 +379,10 @@ class TelegramIntakeTests(unittest.TestCase):
 
         self.assertEqual(len(results), 2)
         self.assertEqual(results[0].envelope.mode, IntakeMode.LIVE)
-        self.assertTrue(results[1].error_response_sent)
-        self.assertEqual(client.sent_messages[0][0], "22")
+        assert results[1].request is not None
+        self.assertEqual(results[1].request.items, [])
+        self.assertEqual(results[1].envelope.metadata["follow_up_reply"], "confirm")
+        self.assertEqual(client.sent_messages, [])
 
 
 if __name__ == "__main__":

@@ -17,7 +17,9 @@ from coupang_cart_agent.notifications import (
     RetryingNotificationService,
     SQLiteNotificationContextStore,
     TelegramSendMessageSender,
+    build_cancelled_notification_payload,
     build_failure_notification_payload,
+    build_proposal_notification_payload,
     build_success_notification_payload,
     format_notification_message,
 )
@@ -39,6 +41,7 @@ def cart_result(
             rating=4.8,
             review_count=1200,
             product_url=f"https://www.coupang.com/vp/products/{product_id}",
+            image_url=f"https://images.example.com/{product_id}.jpg",
         ),
         quantity=quantity,
         selection_reason="Balanced rating, reviews, and price.",
@@ -146,6 +149,35 @@ class NotificationTests(unittest.TestCase):
             message,
         )
 
+    def test_proposal_payload_and_message_include_confirmation_guidance(self) -> None:
+        payload = build_proposal_notification_payload(
+            chat_id="telegram-chat",
+            summary="이전에 양파 300g을 구매하셨고 지금은 500g 2,000원 상품이 더 유리합니다.",
+            candidate={
+                "name": "곰곰 국내산 양파 500g",
+                "price_krw": 2000,
+                "option_summary": "500g / 1개",
+                "selection_reason": "평점과 리뷰 수가 안정적이고 가격이 낮습니다.",
+            },
+            image_url="https://images.example.com/onion.jpg",
+        )
+
+        message = format_notification_message(payload)
+
+        self.assertEqual(payload.kind, "proposal")
+        self.assertIn("추천 상품을 찾았습니다.", message)
+        self.assertIn("곰곰 국내산 양파 500g", message)
+        self.assertIn("다른 거 보여줘", message)
+        self.assertEqual(payload.details["photo"]["url"], "https://images.example.com/onion.jpg")
+
+    def test_cancelled_payload_formats_plain_message(self) -> None:
+        payload = build_cancelled_notification_payload(
+            chat_id="telegram-chat",
+            summary="이번 추천은 취소했습니다. 새 상품명을 보내주시면 다시 제안드릴게요.",
+        )
+
+        self.assertEqual(format_notification_message(payload), payload.summary)
+
     def test_success_message_limits_item_lines_and_total_length(self) -> None:
         payload = build_success_notification_payload(
             chat_id="telegram-chat",
@@ -220,6 +252,37 @@ class NotificationTests(unittest.TestCase):
         service.send(payload)
 
         self.assertEqual(calls, [("telegram-chat", "장바구니 담기에 실패했습니다.\n단계: notify\n원인: 텔레그램 전송에 실패했습니다.")])
+
+    def test_retrying_notification_service_sends_photo_before_message_for_proposal(self) -> None:
+        deliveries: list[tuple[str, str, str | None]] = []
+        messages: list[tuple[str, str]] = []
+
+        class Adapter:
+            def send_photo(self, *, chat_id: str, photo: str, caption: str | None = None) -> None:
+                deliveries.append((chat_id, photo, caption))
+
+            def send_message(self, *, chat_id: str, text: str) -> None:
+                messages.append((chat_id, text))
+
+        service = RetryingNotificationService(sender=Adapter(), formatter=NotificationFormatter())
+        payload = build_proposal_notification_payload(
+            chat_id="telegram-chat",
+            summary="양파 후보를 추천드립니다.",
+            candidate={
+                "name": "곰곰 국내산 양파 500g",
+                "price_krw": 2000,
+                "option_summary": "500g / 1개",
+                "selection_reason": "가격과 리뷰가 균형적입니다.",
+            },
+            image_url="https://images.example.com/onion.jpg",
+        )
+
+        service.send(payload)
+
+        self.assertEqual(deliveries[0][0], "telegram-chat")
+        self.assertEqual(deliveries[0][1], "https://images.example.com/onion.jpg")
+        self.assertIn("곰곰 국내산 양파 500g", deliveries[0][2] or "")
+        self.assertIn("추천 상품을 찾았습니다.", messages[0][1])
 
     def test_telegram_send_message_sender_uses_bot_api_client(self) -> None:
         captured: list[tuple[str, str]] = []

@@ -112,6 +112,20 @@ def product_candidate_from_record(raw: ProductCandidate | Mapping[str, object]) 
             _coerce_int(_read_first(raw, "review_count", "reviewCount", "ratingCount", default=0)),
         ),
         product_url=product_url,
+        image_url=(
+            str(
+                _read_first(
+                    raw,
+                    "image_url",
+                    "imageUrl",
+                    "thumbnail",
+                    "thumbnailUrl",
+                    "image",
+                    default="",
+                )
+            ).strip()
+            or None
+        ),
         vendor=str(_read_first(raw, "vendor", "vendorName", "sellerName", default="")).strip() or None,
         badges=_coerce_badges(_read_first(raw, "badges", "badgeNames", default=[])),
     )
@@ -132,28 +146,31 @@ class DemoCandidateSource:
                 ProductCandidate(
                     product_id=f"{index}-cheap",
                     name=f"{item.name} 보급형",
-                    price_krw=5900,
-                    rating=3.8,
-                    review_count=19,
-                    product_url=f"https://www.coupang.com/vp/products/{index}-cheap",
-                ),
-                ProductCandidate(
-                    product_id=f"{index}-balanced",
-                    name=f"{item.name} 추천",
-                    price_krw=8900,
-                    rating=4.8,
-                    review_count=1800,
-                    product_url=f"https://www.coupang.com/vp/products/{index}-balanced",
-                ),
-                ProductCandidate(
-                    product_id=f"{index}-premium",
-                    name=f"{item.name} 프리미엄",
-                    price_krw=11900,
-                    rating=4.9,
-                    review_count=900,
-                    product_url=f"https://www.coupang.com/vp/products/{index}-premium",
-                ),
-            ]
+                price_krw=5900,
+                rating=3.8,
+                review_count=19,
+                product_url=f"https://www.coupang.com/vp/products/{index}-cheap",
+                image_url=f"https://images.example.com/{index}-cheap.jpg",
+            ),
+            ProductCandidate(
+                product_id=f"{index}-balanced",
+                name=f"{item.name} 추천",
+                price_krw=8900,
+                rating=4.8,
+                review_count=1800,
+                product_url=f"https://www.coupang.com/vp/products/{index}-balanced",
+                image_url=f"https://images.example.com/{index}-balanced.jpg",
+            ),
+            ProductCandidate(
+                product_id=f"{index}-premium",
+                name=f"{item.name} 프리미엄",
+                price_krw=11900,
+                rating=4.9,
+                review_count=900,
+                product_url=f"https://www.coupang.com/vp/products/{index}-premium",
+                image_url=f"https://images.example.com/{index}-premium.jpg",
+            ),
+        ]
         return candidates_by_item
 
 
@@ -187,6 +204,7 @@ class CapturedCoupangFixtureCandidateSource:
                 rating=candidate.rating,
                 review_count=candidate.review_count,
                 product_url=candidate.product_url,
+                image_url=candidate.image_url,
                 vendor=candidate.vendor,
                 badges=list(candidate.badges),
             )

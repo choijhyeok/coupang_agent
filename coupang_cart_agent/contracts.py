@@ -111,6 +111,7 @@ class ProductCandidate:
     rating: float
     review_count: int
     product_url: str
+    image_url: str | None = None
     vendor: str | None = None
     badges: list[str] = field(default_factory=list)
 
@@ -288,6 +289,7 @@ class NotificationPayload:
     success: bool
     stage: str
     summary: str
+    kind: str = "result"
     details: dict[str, object] = field(default_factory=dict)
 
 
@@ -314,6 +316,7 @@ def demo_contract_payload() -> dict[str, object]:
         rating=4.8,
         review_count=12431,
         product_url="https://www.coupang.com/vp/products/CP-1001",
+        image_url="https://images.coupangcdn.com/image/demo/coke-zero.jpg",
         vendor="Coupang",
         badges=["Rocket Delivery", "Best Seller"],
     )
