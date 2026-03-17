@@ -62,7 +62,7 @@
   - `uv run python -m coupang_cart_agent cart-live-inspect-session` -> `ConfigError: COUPANG_CHROME_USER_DATA_DIR is required when COUPANG_BROWSER_LAUNCH_MODE=browser_use.`
   - `uv run python -m coupang_cart_agent check-config` shows `postgres_dsn_set: false`, so `integration-live-request` cannot run in this workspace.
 - Branch: `how-31-goal-driven-recovery-loop`
-- Commit: `c5b2365`
+- Commit: `8823b35`
 - Push: `git push -u origin how-31-goal-driven-recovery-loop` -> success
 - PR: `https://github.com/choijhyeok/coupang_agent/pull/18`
 
