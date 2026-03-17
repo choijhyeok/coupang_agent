@@ -102,4 +102,6 @@
 
 ### Follow-up Issues Created
 
-- None
+- `HOW-32` (`Backlog`): `Workflow] Register LangGraph checkpoint message types to remove unregistered msgpack deserialization warnings`
+  - Related to `HOW-31`
+  - Trigger: repeated `Deserializing unregistered type ... will be blocked in a future version` warnings for `BrowserAgentActionType` / `CartAddStage` during current-head test and live workflow runs
