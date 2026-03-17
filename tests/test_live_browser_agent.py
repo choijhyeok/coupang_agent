@@ -12,6 +12,7 @@ from coupang_cart_agent.contracts import (
     IntakeMode,
     ObservedCartItem,
     ObservedProduct,
+    ProductCandidate,
     RequestSession,
     RequestedItem,
     ShoppingRequest,
@@ -941,6 +942,7 @@ class BrowserWorkflowIntegrationTests(unittest.TestCase):
         )
 
     def test_live_workflow_prefers_browser_agent_over_candidate_source(self) -> None:
+        candidate_calls: list[str] = []
         delivered_messages: list[tuple[str, str]] = []
 
         def sender(chat_id: str, text: str) -> None:
@@ -997,7 +999,37 @@ class BrowserWorkflowIntegrationTests(unittest.TestCase):
         )
         store = InMemoryOperationalStore()
         workflow = CoupangCartAgentLiveWorkflow(
-            candidate_source=lambda request: (_ for _ in ()).throw(RuntimeError("candidate source should not be called")),
+            candidate_source=lambda request: {
+                candidate_calls.append(request.items[0].name) or request.items[0].name: [
+                    ProductCandidate(
+                        product_id="fixture-onion",
+                        name="곰곰 국내산 양파, 3kg, 1개",
+                        price_krw=8900,
+                        rating=4.7,
+                        review_count=1532,
+                        product_url="https://www.coupang.com/vp/products/ONION-1",
+                        image_url="https://images.example.com/onion.jpg",
+                    ),
+                    ProductCandidate(
+                        product_id="fixture-onion-2",
+                        name="국내산 햇 양파, 5kg, 1개",
+                        price_krw=13610,
+                        rating=4.6,
+                        review_count=146522,
+                        product_url="https://www.coupang.com/vp/products/ONION-2",
+                        image_url="https://images.example.com/onion2.jpg",
+                    ),
+                    ProductCandidate(
+                        product_id="fixture-onion-3",
+                        name="국내산 무안 햇양파, 10kg, 1개",
+                        price_krw=19980,
+                        rating=4.5,
+                        review_count=24811,
+                        product_url="https://www.coupang.com/vp/products/ONION-3",
+                        image_url="https://images.example.com/onion3.jpg",
+                    ),
+                ]
+            },
             cart_service=None,
             notification_service=RetryingNotificationService(sender=sender, max_attempts=1),
             operational_store=store,
@@ -1009,9 +1041,10 @@ class BrowserWorkflowIntegrationTests(unittest.TestCase):
         result = workflow.run_envelope(self._envelope())
 
         self.assertTrue(result.success)
-        self.assertEqual(driver.executed_actions, ["search", "click", "add_to_cart"])
-        self.assertIn("장바구니 담기를 완료했습니다.", delivered_messages[0][1])
-        self.assertEqual(store.runs[-1]["agent_reasoning_summary"], "Completed browser-guided shopping flow.")
+        self.assertEqual(candidate_calls, ["양파"])
+        self.assertEqual(driver.executed_actions, [])
+        self.assertIn("추천 상품을 찾았습니다.", delivered_messages[0][1])
+        self.assertEqual(store.runs[-1]["conversation_status"], "awaiting_user_confirmation")
 
     def test_live_workflow_classifies_browser_agent_login_blocker(self) -> None:
         delivered_messages: list[tuple[str, str]] = []
@@ -1021,7 +1054,34 @@ class BrowserWorkflowIntegrationTests(unittest.TestCase):
 
         store = InMemoryOperationalStore()
         workflow = CoupangCartAgentLiveWorkflow(
-            candidate_source=lambda request: {},
+            candidate_source=lambda request: {
+                request.items[0].name: [
+                    ProductCandidate(
+                        product_id="fixture-onion",
+                        name="곰곰 국내산 양파, 3kg, 1개",
+                        price_krw=8900,
+                        rating=4.7,
+                        review_count=1532,
+                        product_url="https://www.coupang.com/vp/products/ONION-1",
+                    ),
+                    ProductCandidate(
+                        product_id="fixture-onion-2",
+                        name="국내산 햇 양파, 5kg, 1개",
+                        price_krw=13610,
+                        rating=4.6,
+                        review_count=146522,
+                        product_url="https://www.coupang.com/vp/products/ONION-2",
+                    ),
+                    ProductCandidate(
+                        product_id="fixture-onion-3",
+                        name="국내산 무안 햇양파, 10kg, 1개",
+                        price_krw=19980,
+                        rating=4.5,
+                        review_count=24811,
+                        product_url="https://www.coupang.com/vp/products/ONION-3",
+                    ),
+                ]
+            },
             cart_service=None,
             notification_service=RetryingNotificationService(sender=sender, max_attempts=1),
             operational_store=store,
@@ -1034,10 +1094,10 @@ class BrowserWorkflowIntegrationTests(unittest.TestCase):
 
         result = workflow.run_envelope(self._envelope())
 
-        self.assertFalse(result.success)
-        self.assertEqual(result.failed_stage, "session")
-        self.assertEqual(result.cart_results[0].failure_reason, CartAddFailureReason.LOGIN_REQUIRED)
-        self.assertIn("login_required", delivered_messages[0][1])
+        self.assertTrue(result.success)
+        self.assertEqual(result.failed_stage, None)
+        self.assertEqual(result.cart_results, [])
+        self.assertIn("추천 상품을 찾았습니다.", delivered_messages[0][1])
 
 
 if __name__ == "__main__":

@@ -416,7 +416,13 @@ class CoupangCartAgentLiveWorkflow:
         }
 
     def _browser_shop_node(self, state: LiveWorkflowState) -> dict[str, object]:
-        if state.get("failed_stage") or self._shopping_agent is None:
+        # HOW-35 switches the live path to proposal-first UX. Keep the legacy browser
+        # shopping agent wired but never let it mutate cart state before confirmation.
+        if (
+            state.get("failed_stage")
+            or self._shopping_agent is None
+            or state.get("user_decision") != "legacy_direct_execute"
+        ):
             return {}
         request = _shopping_request_from_dict(state["request"])
         plan = _agent_plan_from_dict(state["agent_plan"])

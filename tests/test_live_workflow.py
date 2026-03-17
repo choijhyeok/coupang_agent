@@ -107,6 +107,11 @@ class DeliveryRecorder:
         self.photos.append((chat_id, photo, caption))
 
 
+class FailingShoppingAgent:
+    def run(self, **kwargs):
+        raise AssertionError("shopping agent should not run before confirmation")
+
+
 class LiveWorkflowTests(unittest.TestCase):
     def build_envelope(self, *, request_id: str, text: str) -> ShoppingRequestEnvelope:
         request = ShoppingRequest(
@@ -159,6 +164,7 @@ class LiveWorkflowTests(unittest.TestCase):
             notification_service=RetryingNotificationService(sender=recorder, max_attempts=1),
             operational_store=store,
             agent_planner=planner,
+            shopping_agent=FailingShoppingAgent(),
             checkpointer=InMemorySaver(),
         )
 
