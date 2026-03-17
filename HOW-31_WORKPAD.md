@@ -27,7 +27,7 @@
 - [x] selector/tag 일부 변경이 있어도 agent가 scroll/reobserve/replan으로 계속 진행할 수 있다
 - [x] 핵심 관찰 계층이 `Scrapling-first` 구조로 교체되고, Playwright는 보조 실행기 수준으로 축소된다
 - [x] `Scrapling`을 기준으로 CTA 탐색, 상품 정보 추출, cart verification이 동작한다
-- [ ] Branch / commit / publish status recorded
+- [x] Branch / commit / publish status recorded
 
 ### Validation
 
@@ -40,7 +40,7 @@
 - [x] Selector-drift resilience regression evidence
 - [x] Focused tests
 - [x] Full regression
-- [ ] Publish status
+- [x] Publish status
 
 ### Notes / Blockers
 
@@ -61,6 +61,10 @@
 - Live validation blockers confirmed:
   - `uv run python -m coupang_cart_agent cart-live-inspect-session` -> `ConfigError: COUPANG_CHROME_USER_DATA_DIR is required when COUPANG_BROWSER_LAUNCH_MODE=browser_use.`
   - `uv run python -m coupang_cart_agent check-config` shows `postgres_dsn_set: false`, so `integration-live-request` cannot run in this workspace.
+- Branch: `how-31-goal-driven-recovery-loop`
+- Commit: `c5b2365`
+- Push: `git push -u origin how-31-goal-driven-recovery-loop` -> success
+- PR: `https://github.com/choijhyeok/coupang_agent/pull/18`
 
 ### Follow-up Issues Created
 
