@@ -6,7 +6,7 @@
 - Branch: `wowogur12/how-33-performance-reduce-live-agent-latency-for-telegram-to-cart`
 - Workspace: `/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-33`
 - Issue type: follow-up/refinement
-- Linear state: `In Progress`
+- Linear state: `Human Review`
 
 ### Plan
 
