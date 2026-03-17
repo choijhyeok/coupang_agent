@@ -47,4 +47,6 @@
   - None created.
 
 - Publish
-  - Pending commit/push.
+  - Commit: `1b9e8251af1589fccd0d0b570d32f2c069649d9b`
+  - Push: `git push -u origin wowogur12/how-35-agent-ux-conversational-shopping-proposals` -> success
+  - PR: `https://github.com/choijhyeok/coupang_agent/pull/20`
