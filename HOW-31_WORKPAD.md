@@ -77,7 +77,7 @@
     - Cart verification: `cart_count_before: 0`, `cart_count_after: 1`, `stage: verification`, `message: Item added to cart and verified.`
     - Telegram success notification was sent through the live workflow path after verification.
 - Branch: `how-31-goal-driven-recovery-loop`
-- Commit at latest published verification handoff: `5567658d97a491ecaef4699518bbf93a7ec86e75`
+- Current published head: see the most recent Linear handoff comment for the exact SHA
 - Push: `git push origin how-31-goal-driven-recovery-loop` -> success
 - PR: `https://github.com/choijhyeok/coupang_agent/pull/18`
 - Latest review sweep:
