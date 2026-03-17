@@ -110,6 +110,6 @@
 ### Publish
 
 - Branch: `wowogur12/how-33-performance-reduce-live-agent-latency-for-telegram-to-cart`
-- Commit: `15947fdd88766492142ea90d9db12d58a340b45d`
+- Commit: `aed680af78551fdb583f4f29f52e1014a646ad45`
 - Push: `git push -u origin wowogur12/how-33-performance-reduce-live-agent-latency-for-telegram-to-cart` -> success
 - PR: `https://github.com/choijhyeok/coupang_agent/pull/19`
