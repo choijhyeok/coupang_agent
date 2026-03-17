@@ -22,6 +22,14 @@ class NotificationTextSender(Protocol):
 
     def send_message(self, *, chat_id: str, text: str) -> object: ...
 
+    def send_photo(
+        self,
+        *,
+        chat_id: str,
+        photo: str,
+        caption: str | None = None,
+    ) -> object: ...
+
 
 class NotificationFormatter:
     """Bounded formatter that renders a user-facing Telegram message from a payload."""
@@ -30,11 +38,16 @@ class NotificationFormatter:
         self._max_length = max_length
 
     def format(self, payload: NotificationPayload) -> str:
-        message = (
-            _format_success_message(payload, max_length=self._max_length)
-            if payload.success
-            else _format_failure_message(payload)
-        )
+        if payload.kind == "proposal":
+            message = _format_proposal_message(payload)
+        elif payload.kind == "cancelled":
+            message = _format_cancelled_message(payload)
+        else:
+            message = (
+                _format_success_message(payload, max_length=self._max_length)
+                if payload.success
+                else _format_failure_message(payload)
+            )
         return truncate_message(message, limit=self._max_length)
 
 
@@ -46,6 +59,15 @@ class TelegramSendMessageSender:
 
     def send_message(self, *, chat_id: str, text: str) -> dict[str, Any]:
         return self._client.send_message(chat_id=chat_id, text=text)
+
+    def send_photo(
+        self,
+        *,
+        chat_id: str,
+        photo: str,
+        caption: str | None = None,
+    ) -> dict[str, Any]:
+        return self._client.send_photo(chat_id=chat_id, photo=photo, caption=caption)
 
 
 class SQLiteNotificationContextStore:
@@ -178,7 +200,49 @@ def build_failure_notification_payload(
         success=False,
         stage=stage,
         summary=summary,
+        kind="result",
         details=details,
+    )
+
+
+def build_proposal_notification_payload(
+    *,
+    chat_id: str,
+    summary: str,
+    candidate: dict[str, object],
+    alternatives: list[dict[str, object]] | None = None,
+    image_url: str | None = None,
+) -> NotificationPayload:
+    details: dict[str, object] = {
+        "candidate": dict(candidate),
+        "alternatives": list(alternatives or []),
+    }
+    if image_url:
+        details["photo"] = {
+            "url": image_url,
+            "caption": _build_proposal_caption(summary=summary, candidate=candidate),
+        }
+    return NotificationPayload(
+        chat_id=chat_id,
+        success=True,
+        stage="proposal_pending",
+        summary=summary,
+        kind="proposal",
+        details=details,
+    )
+
+
+def build_cancelled_notification_payload(
+    *,
+    chat_id: str,
+    summary: str,
+) -> NotificationPayload:
+    return NotificationPayload(
+        chat_id=chat_id,
+        success=True,
+        stage="cancelled",
+        summary=summary,
+        kind="cancelled",
     )
 
 
@@ -220,7 +284,7 @@ class RetryingNotificationService:
         attempt = 1
         while True:
             try:
-                self._dispatch(payload.chat_id, message)
+                self._dispatch(payload, message)
                 return
             except self._retryable_exceptions as exc:
                 if attempt >= self._max_attempts:
@@ -231,10 +295,20 @@ class RetryingNotificationService:
                 if self._sleep_seconds > 0:
                     self._sleep_func(self._sleep_seconds)
 
-    def _dispatch(self, chat_id: str, message: str) -> object | None:
+    def _dispatch(self, payload: NotificationPayload, message: str) -> object | None:
+        photo_payload = payload.details.get("photo")
+        if hasattr(self._sender, "send_photo") and isinstance(photo_payload, dict):
+            photo_url = str(photo_payload.get("url", "")).strip()
+            caption = photo_payload.get("caption")
+            if photo_url:
+                self._sender.send_photo(
+                    chat_id=payload.chat_id,
+                    photo=photo_url,
+                    caption=None if caption in (None, "") else str(caption),
+                )
         if hasattr(self._sender, "send_message"):
-            return self._sender.send_message(chat_id=chat_id, text=message)
-        return self._sender(chat_id, message)
+            return self._sender.send_message(chat_id=payload.chat_id, text=message)
+        return self._sender(payload.chat_id, message)
 
 
 def summarize_cart_results(
@@ -352,6 +426,38 @@ def _build_prior_purchase_lines(
         if len(matched_lines) >= item_limit:
             break
     return matched_lines
+
+
+def _format_proposal_message(payload: NotificationPayload) -> str:
+    candidate = payload.details.get("candidate", {})
+    if not isinstance(candidate, dict):
+        candidate = {}
+    lines = [
+        "추천 상품을 찾았습니다.",
+        f"상품: {truncate_text(str(candidate.get('name', '상품 정보 없음')), limit=80)}",
+    ]
+    option_summary = truncate_text(str(candidate.get("option_summary", "")).strip(), limit=40)
+    if option_summary:
+        lines.append(f"옵션: {option_summary}")
+    lines.append(f"가격: {format_price(int(candidate.get('price_krw', 0)))}원")
+    reason = truncate_text(str(candidate.get("selection_reason", payload.summary)), limit=180)
+    lines.append(f"추천 이유: {reason}")
+    lines.append("이대로 진행하려면 `ㅇㅇ 담아줘`, 다른 추천은 `다른 거 보여줘`, 취소는 `취소`라고 답해주세요.")
+    return "\n".join(lines)
+
+
+def _format_cancelled_message(payload: NotificationPayload) -> str:
+    return payload.summary
+
+
+def _build_proposal_caption(*, summary: str, candidate: dict[str, object]) -> str:
+    parts = [truncate_text(str(candidate.get("name", "상품 정보 없음")), limit=80)]
+    option_summary = truncate_text(str(candidate.get("option_summary", "")).strip(), limit=32)
+    if option_summary:
+        parts.append(option_summary)
+    parts.append(f"{format_price(int(candidate.get('price_krw', 0)))}원")
+    parts.append(truncate_text(summary, limit=120))
+    return "\n".join(part for part in parts if part)
 
 
 def _format_failure_message(payload: NotificationPayload) -> str:
