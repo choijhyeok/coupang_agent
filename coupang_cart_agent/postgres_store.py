@@ -76,6 +76,7 @@ class PostgresOperationalStore:
                         agent_reasoning_summary TEXT,
                         last_observation_json JSONB,
                         agent_steps_json JSONB,
+                        performance_json JSONB,
                         selections_json JSONB NOT NULL,
                         cart_results_json JSONB NOT NULL,
                         notification_payload_json JSONB,
@@ -141,6 +142,12 @@ class PostgresOperationalStore:
                     table_name="workflow_runs",
                     column_name="agent_steps_json",
                     ddl="ALTER TABLE workflow_runs ADD COLUMN agent_steps_json JSONB",
+                )
+                self._ensure_column(
+                    cursor,
+                    table_name="workflow_runs",
+                    column_name="performance_json",
+                    ddl="ALTER TABLE workflow_runs ADD COLUMN performance_json JSONB",
                 )
             connection.commit()
 
@@ -317,6 +324,7 @@ class PostgresOperationalStore:
         agent_reasoning_summary: str | None,
         last_observation: dict[str, object] | None,
         agent_steps: list[dict[str, object]] | None,
+        performance: dict[str, object] | None,
         success: bool,
         failed_stage: str | None,
         failure_message: str | None,
@@ -353,6 +361,7 @@ class PostgresOperationalStore:
                                 ),
                                 "last_mode": envelope.mode.value,
                                 "agent_reasoning_summary": agent_reasoning_summary,
+                                "last_performance": performance,
                                 }
                             )
                         ),
@@ -374,11 +383,12 @@ class PostgresOperationalStore:
                         agent_reasoning_summary,
                         last_observation_json,
                         agent_steps_json,
+                        performance_json,
                         selections_json,
                         cart_results_json,
                         notification_payload_json,
                         recorded_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         thread_id,
@@ -393,6 +403,7 @@ class PostgresOperationalStore:
                         agent_reasoning_summary,
                         None if last_observation is None else Jsonb(_json_ready(last_observation)),
                         None if agent_steps is None else Jsonb(_json_ready(agent_steps)),
+                        None if performance is None else Jsonb(_json_ready(performance)),
                         Jsonb(_json_ready([asdict(selection) for selection in selections])),
                         Jsonb(_json_ready([asdict(result) for result in cart_results])),
                         None if notification_payload is None else Jsonb(_json_ready(asdict(notification_payload))),
@@ -487,7 +498,7 @@ class PostgresOperationalStore:
         with psycopg.connect(self._dsn, row_factory=dict_row) as connection:
             rows = connection.execute(
                 """
-                SELECT thread_id, user_id, chat_id, request_id, success, failed_stage, failure_message, recorded_at
+                SELECT thread_id, user_id, chat_id, request_id, success, failed_stage, failure_message, performance_json, recorded_at
                 FROM workflow_runs
                 ORDER BY id ASC
                 """
@@ -501,6 +512,7 @@ class PostgresOperationalStore:
                 "success": bool(row["success"]),
                 "failed_stage": row["failed_stage"],
                 "failure_message": row["failure_message"],
+                "performance": row["performance_json"] or {},
                 "recorded_at": _parse_timestamp(row["recorded_at"]).isoformat(),
             }
             for row in rows

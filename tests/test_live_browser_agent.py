@@ -204,6 +204,7 @@ class LiveBrowserAgentTests(unittest.TestCase):
                         "badges": ["Rocket"],
                     },
                     add_to_cart_visible=True,
+                    cart_count=0,
                 ),
             ]
         )
@@ -224,6 +225,8 @@ class LiveBrowserAgentTests(unittest.TestCase):
         self.assertEqual(result.selections[0].candidate.product_id, "CP-1001")
         self.assertEqual(result.cart_results[0].cart_count_before, 0)
         self.assertEqual(result.cart_results[0].cart_count_after, 1)
+        self.assertEqual(driver._snapshot_calls, 0)
+        self.assertEqual(result.performance["counts"]["cart_snapshot_count"], 0)
 
     def test_agent_stops_on_option_ambiguity(self) -> None:
         driver = SequencedBrowserDriver(

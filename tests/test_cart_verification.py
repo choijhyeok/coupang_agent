@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from coupang_cart_agent.cart_verification import DeterministicCartVerifier
+from coupang_cart_agent.cart_verification import AzureOpenAICartVerifier, DeterministicCartVerifier
 from coupang_cart_agent.contracts import (
     BrowserObservation,
     CartAddFailureReason,
@@ -103,6 +103,46 @@ class CartVerificationTests(unittest.TestCase):
 
         self.assertTrue(decision.success)
         self.assertEqual(decision.matched_item_name, "곰곰 국내산 양파 3kg")
+
+    def test_aoai_verifier_skips_network_when_deterministic_fast_path_succeeds(self) -> None:
+        selection = SelectedProduct(
+            request_item_name="양파",
+            candidate=ProductCandidate(
+                product_id="ONION-1",
+                name="곰곰 국내산 양파 3kg",
+                price_krw=8900,
+                rating=4.7,
+                review_count=1532,
+                product_url="https://www.coupang.com/vp/products/ONION-1",
+            ),
+            quantity=1,
+            selection_reason="Best match.",
+            score=9.8,
+        )
+        observation = BrowserObservation(
+            step_index=0,
+            url="https://cart.coupang.com/cartView.pang",
+            title="쿠팡 장바구니",
+            page_kind="browse",
+            body_text_excerpt="곰곰 국내산 양파 3kg 수량 1",
+            cart_items=[ObservedCartItem(name="곰곰 국내산 양파 3kg", quantity=1, quantity_text="1개")],
+            cart_count=1,
+        )
+
+        class NeverPostVerifier(AzureOpenAICartVerifier):
+            def _post(self, payload):  # type: ignore[override]
+                raise AssertionError("AOAI fallback should not run for deterministic fast-path success")
+
+        verifier = NeverPostVerifier(endpoint="https://example.com", api_key="key", deployment="dep")
+        decision = verifier.verify(
+            selection=selection,
+            observation=observation,
+            cart_count_before=0,
+            cart_count_after=1,
+        )
+
+        self.assertTrue(decision.success)
+        self.assertEqual(decision.evidence["aoai_status"], "skipped_fast_path_success")
 
 
 if __name__ == "__main__":

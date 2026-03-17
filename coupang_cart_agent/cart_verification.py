@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass
@@ -203,6 +204,14 @@ class AzureOpenAICartVerifier:
             cart_count_before=cart_count_before,
             cart_count_after=cart_count_after,
         )
+        if fallback.success:
+            fallback.evidence.setdefault("verification_tier", "deterministic_fast_path")
+            fallback.evidence.setdefault("aoai_status", "skipped_fast_path_success")
+            return fallback
+        if fallback.failure_reason == CartAddFailureReason.VERIFICATION_MISMATCH:
+            fallback.evidence.setdefault("verification_tier", "deterministic_fast_path")
+            fallback.evidence.setdefault("aoai_status", "skipped_fast_path_mismatch")
+            return fallback
         if not self.is_configured():
             fallback.evidence.setdefault("aoai_status", "not_configured")
             return fallback
@@ -229,7 +238,9 @@ class AzureOpenAICartVerifier:
             "response_format": {"type": "json_object"},
         }
         try:
+            started = time.perf_counter()
             response = self._post(payload)
+            elapsed_ms = round((time.perf_counter() - started) * 1000.0, 2)
             content = _read_message_content(response)
             parsed = json.loads(content)
             verdict = str(parsed.get("verdict", "review_needed")).strip().lower()
@@ -245,6 +256,9 @@ class AzureOpenAICartVerifier:
                         **fallback.evidence,
                         "verification_method": "azure_openai",
                         "aoai_verdict": verdict,
+                        "verification_tier": "aoai_fallback",
+                        "aoai_status": "used_review_needed_fallback",
+                        "aoai_latency_ms": elapsed_ms,
                     },
                 )
             failure_reason = CartAddFailureReason.MANUAL_REVIEW_REQUIRED
@@ -264,10 +278,14 @@ class AzureOpenAICartVerifier:
                     **fallback.evidence,
                     "verification_method": "azure_openai",
                     "aoai_verdict": verdict,
+                    "verification_tier": "aoai_fallback",
+                    "aoai_status": "used_review_needed_fallback",
+                    "aoai_latency_ms": elapsed_ms,
                 },
             )
         except Exception as exc:
             fallback.evidence.setdefault("aoai_error", str(exc))
+            fallback.evidence.setdefault("verification_tier", "deterministic_fallback_after_aoai_error")
             return fallback
 
     def _post(self, payload: dict[str, object]) -> dict[str, object]:

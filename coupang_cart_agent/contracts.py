@@ -277,6 +277,7 @@ class BrowserAgentRun:
     reasoning_summary: str = ""
     last_observation: BrowserObservation | None = None
     steps: list[BrowserAgentStep] = field(default_factory=list)
+    performance: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

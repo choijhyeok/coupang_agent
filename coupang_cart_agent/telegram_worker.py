@@ -27,6 +27,9 @@ class WorkerCycleReport:
     failure_count: int
     pending_before: int
     pending_after: int
+    poll_duration_ms: float
+    processing_duration_ms: float
+    cycle_duration_ms: float
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -40,6 +43,9 @@ class WorkerCycleReport:
             "failure_count": self.failure_count,
             "pending_before": self.pending_before,
             "pending_after": self.pending_after,
+            "poll_duration_ms": self.poll_duration_ms,
+            "processing_duration_ms": self.processing_duration_ms,
+            "cycle_duration_ms": self.cycle_duration_ms,
         }
 
 
@@ -88,13 +94,16 @@ class TelegramLiveWorker:
         return reports
 
     def run_cycle(self, *, cycle: int, offset: int | None) -> WorkerCycleReport:
+        cycle_started = time.perf_counter()
         pending_before = len(self._intake_repository.load_pending_envelopes(limit=100))
+        poll_started = time.perf_counter()
         intake_results = self._intake_service.poll_once(
             offset=offset,
             timeout=self._poll_timeout,
             mode=IntakeMode.LIVE,
             send_error_response=self._send_error_response,
         )
+        poll_duration_ms = round((time.perf_counter() - poll_started) * 1000.0, 2)
         highest_update_id = max((result.update_id for result in intake_results), default=None)
         next_offset = offset if highest_update_id is None else highest_update_id + 1
         self._intake_repository.save_worker_cursor(
@@ -112,6 +121,7 @@ class TelegramLiveWorker:
         success_count = 0
         failure_count = 0
         processed_count = 0
+        processing_started = time.perf_counter()
         for envelope in self._intake_repository.load_pending_envelopes(limit=max(1, len(intake_results) + pending_before + 5)):
             processed_count += 1
             self._intake_repository.mark_envelope_processing(inbound_message_id=envelope.inbound_message_id)
@@ -156,6 +166,8 @@ class TelegramLiveWorker:
             )
 
         pending_after = len(self._intake_repository.load_pending_envelopes(limit=100))
+        processing_duration_ms = round((time.perf_counter() - processing_started) * 1000.0, 2)
+        cycle_duration_ms = round((time.perf_counter() - cycle_started) * 1000.0, 2)
         report = WorkerCycleReport(
             cycle=cycle,
             worker_name=self._worker_name,
@@ -167,6 +179,9 @@ class TelegramLiveWorker:
             failure_count=failure_count,
             pending_before=pending_before,
             pending_after=pending_after,
+            poll_duration_ms=poll_duration_ms,
+            processing_duration_ms=processing_duration_ms,
+            cycle_duration_ms=cycle_duration_ms,
         )
         self._logger({"type": "worker-cycle", **report.as_dict()})
         return report
