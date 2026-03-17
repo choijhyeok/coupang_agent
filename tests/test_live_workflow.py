@@ -166,6 +166,9 @@ class LiveWorkflowTests(unittest.TestCase):
         self.assertIn("Prior purchases available", persisted_state["agent_plan"]["operator_note"])
         self.assertEqual(len(delivered_messages), 2)
         self.assertIn("장바구니 담기를 완료했습니다.", delivered_messages[-1][1])
+        self.assertIn("agent_plan", second_result.performance["timings_ms"])
+        self.assertIn("notify", second_result.performance["timings_ms"])
+        self.assertEqual(store.runs[-1]["performance"]["counts"]["planner_call_count"], 1)
 
     def test_live_workflow_reports_cart_failure_and_persists_failure_state(self) -> None:
         delivered_messages: list[tuple[str, str]] = []

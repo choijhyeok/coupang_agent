@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import re
+import time
 import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass
@@ -80,13 +81,25 @@ class AzureOpenAIBrowserAgent:
         self._api_version = api_version
         self._timeout_seconds = timeout_seconds
         self._fallback_model = fallback_model or DeterministicBrowserAgentModel()
+        self._last_decision_metadata: dict[str, object] = {"mode": "uninitialized"}
 
     def is_configured(self) -> bool:
         return bool(self._endpoint and self._api_key and self._deployment)
 
     def decide(self, *, context: BrowserAgentContext, observation: BrowserObservation) -> BrowserAgentAction:
+        fallback_action = self._fallback_model.decide(context=context, observation=observation)
+        if _should_use_deterministic_fast_path(fallback_action):
+            self._last_decision_metadata = {
+                "mode": "deterministic_fast_path",
+                "action_type": fallback_action.action_type.value,
+            }
+            return fallback_action
         if not self.is_configured():
-            return self._fallback_model.decide(context=context, observation=observation)
+            self._last_decision_metadata = {
+                "mode": "deterministic_not_configured",
+                "action_type": fallback_action.action_type.value,
+            }
+            return fallback_action
 
         payload = {
             "messages": [
@@ -109,12 +122,27 @@ class AzureOpenAIBrowserAgent:
         }
 
         try:
+            started = time.perf_counter()
             response = self._post(payload)
+            elapsed_ms = round((time.perf_counter() - started) * 1000.0, 2)
             content = _read_message_content(response)
             raw = json.loads(content)
-            return _browser_action_from_dict(raw)
+            action = _browser_action_from_dict(raw)
+            self._last_decision_metadata = {
+                "mode": "azure_openai",
+                "action_type": action.action_type.value,
+                "latency_ms": elapsed_ms,
+            }
+            return action
         except Exception:
-            return self._fallback_model.decide(context=context, observation=observation)
+            self._last_decision_metadata = {
+                "mode": "deterministic_after_aoai_error",
+                "action_type": fallback_action.action_type.value,
+            }
+            return fallback_action
+
+    def last_decision_metadata(self) -> dict[str, object]:
+        return dict(self._last_decision_metadata)
 
     def _post(self, payload: dict[str, object]) -> dict[str, object]:
         url = (
@@ -266,6 +294,7 @@ class CoupangLiveBrowserShoppingAgent:
         selections: list[SelectedProduct] = []
         cart_results: list[CartAddResult] = []
         last_observation: BrowserObservation | None = None
+        performance = _empty_performance_tracker()
 
         for item in request.items:
             selected_product: SelectedProduct | None = None
@@ -276,10 +305,12 @@ class CoupangLiveBrowserShoppingAgent:
             item_step_count = 0
 
             while item_step_count < self._max_steps_per_item:
+                observe_started = time.perf_counter()
                 observation = self._driver.observe(
                     step_index=len(steps) + 1,
                     last_action_summary=None if not steps else steps[-1].execution_summary,
                 )
+                _record_duration(performance, "observe", time.perf_counter() - observe_started)
                 item_step_count += 1
                 last_observation = observation
                 context = BrowserAgentContext(
@@ -299,7 +330,14 @@ class CoupangLiveBrowserShoppingAgent:
                     attempted_queries=attempted_queries,
                     prior_steps=context.prior_steps,
                 )
-                action = recovery_action or self._model.decide(context=context, observation=observation)
+                if recovery_action is not None:
+                    performance["counts"]["recovery_action_count"] += 1
+                    action = recovery_action
+                else:
+                    decide_started = time.perf_counter()
+                    action = self._model.decide(context=context, observation=observation)
+                    _record_duration(performance, "model_decide", time.perf_counter() - decide_started)
+                    _record_model_decision(performance, self._model)
                 action = _coerce_action_for_context(action=action, context=context, observation=observation)
 
                 if action.action_type == BrowserAgentActionType.STOP:
@@ -315,7 +353,9 @@ class CoupangLiveBrowserShoppingAgent:
                         prior_steps=context.prior_steps,
                     )
                     if fallback_recovery is not None and item_step_count < self._max_steps_per_item:
+                        action_started = time.perf_counter()
                         execution_summary = self._driver.execute_action(fallback_recovery)
+                        _record_duration(performance, "execute_action", time.perf_counter() - action_started)
                         steps.append(
                             BrowserAgentStep(
                                 step_index=len(steps) + 1,
@@ -361,12 +401,18 @@ class CoupangLiveBrowserShoppingAgent:
                         reasoning_summary=action.reasoning_summary,
                         last_observation=last_observation,
                         steps=steps,
+                        performance=_finalize_performance_tracker(performance, steps=steps),
                     )
 
                 if action.action_type == BrowserAgentActionType.ADD_TO_CART:
-                    before = self._driver.cart_snapshot()
+                    before_count = observation.cart_count
+                    if before_count is None:
+                        snapshot_started = time.perf_counter()
+                        before_count = self._driver.cart_snapshot().item_count
+                        _record_duration(performance, "cart_snapshot", time.perf_counter() - snapshot_started)
+                    action_started = time.perf_counter()
                     execution_summary = self._driver.execute_action(action)
-                    after = self._driver.cart_snapshot()
+                    _record_duration(performance, "execute_action", time.perf_counter() - action_started)
                     checkout_attempted = self._driver.checkout_started()
                     selected_product = selected_product or _selection_from_observation(
                         item=item,
@@ -392,8 +438,8 @@ class CoupangLiveBrowserShoppingAgent:
                                 message="Cart add triggered checkout flow and was stopped.",
                                 session_mode=session_mode,
                                 observation=observation,
-                                cart_count_before=before.item_count,
-                                cart_count_after=after.item_count,
+                                cart_count_before=before_count,
+                                cart_count_after=None,
                                 checkout_attempted=True,
                                 selected_options=selected_options,
                             )
@@ -404,15 +450,30 @@ class CoupangLiveBrowserShoppingAgent:
                             reasoning_summary=action.reasoning_summary,
                             last_observation=last_observation,
                             steps=steps,
+                            performance=_finalize_performance_tracker(performance, steps=steps),
                         )
 
+                    verification_started = time.perf_counter()
                     verification_observation = self._driver.observe_cart_verification()
+                    _record_duration(
+                        performance,
+                        "observe_cart_verification",
+                        time.perf_counter() - verification_started,
+                    )
+                    after_count = verification_observation.cart_count
+                    if after_count is None:
+                        snapshot_started = time.perf_counter()
+                        after_count = self._driver.cart_snapshot().item_count
+                        _record_duration(performance, "cart_snapshot", time.perf_counter() - snapshot_started)
+                    verify_started = time.perf_counter()
                     verification = self._cart_verifier.verify(
                         selection=selected_product,
                         observation=verification_observation,
-                        cart_count_before=before.item_count,
-                        cart_count_after=after.item_count,
+                        cart_count_before=before_count,
+                        cart_count_after=after_count,
                     )
+                    _record_duration(performance, "verify", time.perf_counter() - verify_started)
+                    performance["counts"]["verifier_call_count"] += 1
                     if not verification.success:
                         attempted_product_hrefs.add(selected_product.candidate.product_url)
                         goal_recovery = _recovery_action_after_goal_check(
@@ -427,7 +488,9 @@ class CoupangLiveBrowserShoppingAgent:
                             prior_steps=context.prior_steps,
                         )
                         if goal_recovery is not None and item_step_count < self._max_steps_per_item:
+                            action_started = time.perf_counter()
                             execution_summary = self._driver.execute_action(goal_recovery)
+                            _record_duration(performance, "execute_action", time.perf_counter() - action_started)
                             steps.append(
                                 BrowserAgentStep(
                                     step_index=len(steps) + 1,
@@ -455,8 +518,8 @@ class CoupangLiveBrowserShoppingAgent:
                                     verification.failure_reason
                                     or CartAddFailureReason.MANUAL_REVIEW_REQUIRED
                                 ),
-                                cart_count_before=before.item_count,
-                                cart_count_after=after.item_count,
+                                cart_count_before=before_count,
+                                cart_count_after=after_count,
                                 checkout_attempted=False,
                                 evidence={
                                     "session_mode": session_mode,
@@ -474,6 +537,7 @@ class CoupangLiveBrowserShoppingAgent:
                             reasoning_summary=verification.reason,
                             last_observation=verification_observation,
                             steps=steps,
+                            performance=_finalize_performance_tracker(performance, steps=steps),
                         )
 
                     cart_results.append(
@@ -483,8 +547,8 @@ class CoupangLiveBrowserShoppingAgent:
                             selected_product=selected_product,
                             stage=CartAddStage.VERIFICATION,
                             message="Item added to cart and verified.",
-                            cart_count_before=before.item_count,
-                            cart_count_after=after.item_count,
+                            cart_count_before=before_count,
+                            cart_count_after=after_count,
                             checkout_attempted=False,
                             evidence={
                                 "session_mode": session_mode,
@@ -499,7 +563,9 @@ class CoupangLiveBrowserShoppingAgent:
                     selections.append(selected_product)
                     break
 
+                action_started = time.perf_counter()
                 execution_summary = self._driver.execute_action(action)
+                _record_duration(performance, "execute_action", time.perf_counter() - action_started)
                 steps.append(
                     BrowserAgentStep(
                         step_index=len(steps) + 1,
@@ -556,6 +622,7 @@ class CoupangLiveBrowserShoppingAgent:
                     reasoning_summary="Browser agent exhausted the maximum step budget.",
                     last_observation=failure_observation,
                     steps=steps,
+                    performance=_finalize_performance_tracker(performance, steps=steps),
                 )
 
         return BrowserAgentRun(
@@ -564,7 +631,77 @@ class CoupangLiveBrowserShoppingAgent:
             reasoning_summary="Completed browser-guided shopping flow.",
             last_observation=last_observation,
             steps=steps,
+            performance=_finalize_performance_tracker(performance, steps=steps),
         )
+
+
+def _should_use_deterministic_fast_path(action: BrowserAgentAction) -> bool:
+    if action.action_type in (
+        BrowserAgentActionType.SEARCH,
+        BrowserAgentActionType.CLICK,
+        BrowserAgentActionType.SELECT_OPTION,
+        BrowserAgentActionType.ADD_TO_CART,
+        BrowserAgentActionType.SCROLL,
+        BrowserAgentActionType.GO_BACK,
+    ):
+        return True
+    return action.action_type == BrowserAgentActionType.STOP and action.blocker_reason not in (
+        None,
+        CartAddFailureReason.AMBIGUITY,
+    )
+
+
+def _empty_performance_tracker() -> dict[str, object]:
+    return {
+        "timings_ms": {},
+        "counts": {
+            "observation_count": 0,
+            "action_execution_count": 0,
+            "cart_snapshot_count": 0,
+            "model_call_count": 0,
+            "verifier_call_count": 0,
+            "recovery_action_count": 0,
+            "deterministic_action_count": 0,
+            "aoai_action_count": 0,
+        },
+    }
+
+
+def _record_duration(performance: dict[str, object], key: str, elapsed_seconds: float) -> None:
+    timings = performance["timings_ms"]
+    counts = performance["counts"]
+    total = round(float(timings.get(key, 0.0)) + (elapsed_seconds * 1000.0), 2)
+    timings[key] = total
+    if key == "observe":
+        counts["observation_count"] += 1
+    elif key == "execute_action":
+        counts["action_execution_count"] += 1
+    elif key == "cart_snapshot":
+        counts["cart_snapshot_count"] += 1
+    elif key == "model_decide":
+        counts["model_call_count"] += 1
+
+
+def _record_model_decision(performance: dict[str, object], model: BrowserAgentModel) -> None:
+    counts = performance["counts"]
+    metadata_getter = getattr(model, "last_decision_metadata", None)
+    if not callable(metadata_getter):
+        return
+    metadata = metadata_getter()
+    mode = str(metadata.get("mode") or "")
+    if mode == "azure_openai":
+        counts["aoai_action_count"] += 1
+    elif mode:
+        counts["deterministic_action_count"] += 1
+
+
+def _finalize_performance_tracker(performance: dict[str, object], *, steps: list[BrowserAgentStep]) -> dict[str, object]:
+    result = {
+        "timings_ms": dict(performance.get("timings_ms", {})),
+        "counts": dict(performance.get("counts", {})),
+    }
+    result["counts"]["step_count"] = len(steps)
+    return result
 
 
 def _build_user_message(

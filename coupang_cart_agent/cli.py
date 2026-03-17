@@ -13,6 +13,7 @@ from langgraph.checkpoint.postgres import PostgresSaver
 
 from .azure_openai import AzureOpenAIPlanner
 from .candidate_sources import CapturedCoupangFixtureCandidateSource, DemoCandidateSource
+from .cart_verification import AzureOpenAICartVerifier
 from .cart_adapters import (
     BrowserUseCoupangCartPage,
     BrowserUseSettings,
@@ -67,6 +68,15 @@ def _build_live_notification_service(*, token: str) -> RetryingNotificationServi
     return RetryingNotificationService(
         sender=TelegramSendMessageSender(client=TelegramBotApiClient(token=token)),
         max_attempts=3,
+    )
+
+
+def _build_live_cart_verifier(config):
+    return AzureOpenAICartVerifier(
+        endpoint=config.azure_openai_endpoint,
+        api_key=config.azure_openai_api_key,
+        deployment=config.azure_openai_deployment,
+        api_version=config.azure_openai_api_version,
     )
 
 
@@ -126,6 +136,7 @@ def _open_live_workflow(
         page=page,
         credentials=None,
         result_store=SqliteCartResultStore(config.cart_db_path),
+        verifier=_build_live_cart_verifier(config),
     )
     shopping_agent = CoupangLiveBrowserShoppingAgent(
         driver=page,
@@ -135,6 +146,7 @@ def _open_live_workflow(
             deployment=config.azure_openai_deployment,
             api_version=config.azure_openai_api_version,
         ),
+        cart_verifier=_build_live_cart_verifier(config),
     )
     with PostgresSaver.from_conn_string(config.postgres_dsn) as checkpointer:
         checkpointer.setup()
@@ -518,6 +530,7 @@ def main(argv: list[str] | None = None) -> int:
             page=page,
             credentials=None,
             result_store=SqliteCartResultStore(parsed.db_path or config.cart_db_path),
+            verifier=_build_live_cart_verifier(config),
         )
 
         try:

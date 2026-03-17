@@ -344,16 +344,20 @@ class PlaywrightCoupangCartPage:
         body_text = self._safe_inner_text(page)
         if blocker_hint is None:
             blocker_hint = self._infer_session_blocker_hint(page=page, body_text=body_text)
-        snapshot = self._extract_browser_snapshot(page)
+        page_html = self._safe_page_content(page)
+        snapshot = self._extract_browser_snapshot(page, body_text=body_text, html=page_html)
         self._last_action_hints = dict(snapshot.pop("action_hints", {}))
-        screenshot_dir = Path(".artifacts/browser-agent")
-        screenshot_dir.mkdir(parents=True, exist_ok=True)
-        screenshot_path = screenshot_dir / f"{screenshot_label}.png"
+        include_visual_evidence = screenshot_label.startswith("verification") or blocker_hint is not None
         screenshot_bytes = None
-        try:
-            screenshot_bytes = page.screenshot(path=str(screenshot_path), type="png")
-        except Exception:
-            screenshot_path = None
+        screenshot_path = None
+        if include_visual_evidence:
+            screenshot_dir = Path(".artifacts/browser-agent")
+            screenshot_dir.mkdir(parents=True, exist_ok=True)
+            screenshot_path = screenshot_dir / f"{screenshot_label}.png"
+            try:
+                screenshot_bytes = page.screenshot(path=str(screenshot_path), type="png")
+            except Exception:
+                screenshot_path = None
         selected_hint = snapshot.get("selected_product_hint", {})
         observed_products = [
             ObservedProduct(
@@ -418,7 +422,7 @@ class PlaywrightCoupangCartPage:
             page_kind=page_kind,
             body_text_excerpt=body_text[:2000],
             accessibility_lines=[str(item) for item in snapshot.get("interactive_elements", [])[:25]],
-            html_excerpt=self._safe_html_excerpt(page),
+            html_excerpt=None if not include_visual_evidence else self._html_excerpt(page_html),
             screenshot_path=None if screenshot_path is None else str(screenshot_path),
             screenshot_base64=encode_screenshot_bytes(screenshot_bytes),
             interactive_elements=[str(item) for item in snapshot.get("interactive_elements", [])[:25]],
@@ -637,7 +641,7 @@ class PlaywrightCoupangCartPage:
                 fragments.append(normalized)
         return fragments
 
-    def _extract_browser_snapshot(self, page: Page) -> dict[str, object]:
+    def _extract_browser_snapshot(self, page: Page, *, body_text: str, html: str | None) -> dict[str, object]:
         try:
             viewport_state = page.evaluate(
                 """
@@ -693,8 +697,8 @@ class PlaywrightCoupangCartPage:
                 return {}
             snapshot, hints = self._scrapling_adapter.extract(
                 url=page.url,
-                html=page.content(),
-                body_text=self._safe_inner_text(page),
+                html=html or "",
+                body_text=body_text,
                 viewport_state=viewport_state,
             )
             snapshot["action_hints"] = hints
@@ -714,11 +718,17 @@ class PlaywrightCoupangCartPage:
         except Exception:
             return ""
 
-    def _safe_html_excerpt(self, page: Page) -> str | None:
+    def _safe_page_content(self, page: Page) -> str | None:
         try:
-            return page.content()[:3000]
+            return page.content()
         except Exception:
             return None
+
+    @staticmethod
+    def _html_excerpt(html: str | None) -> str | None:
+        if html is None:
+            return None
+        return html[:3000]
 
     def _page_kind(
         self,

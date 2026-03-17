@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+import time
 from typing import Protocol, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -54,6 +55,7 @@ class LiveWorkflowState(TypedDict, total=False):
     agent_reasoning_summary: str
     last_observation: dict[str, object]
     notification_payload: dict[str, object]
+    performance: dict[str, object]
     success: bool
     failed_stage: str | None
     failure_message: str | None
@@ -84,6 +86,7 @@ class OperationalStore(Protocol):
         agent_reasoning_summary: str | None,
         last_observation: dict[str, object] | None,
         agent_steps: list[dict[str, object]] | None,
+        performance: dict[str, object] | None,
         success: bool,
         failed_stage: str | None,
         failure_message: str | None,
@@ -147,6 +150,7 @@ class InMemoryOperationalStore:
         agent_reasoning_summary: str | None,
         last_observation: dict[str, object] | None,
         agent_steps: list[dict[str, object]] | None,
+        performance: dict[str, object] | None,
         success: bool,
         failed_stage: str | None,
         failure_message: str | None,
@@ -164,6 +168,7 @@ class InMemoryOperationalStore:
                 "agent_reasoning_summary": agent_reasoning_summary,
                 "last_observation": last_observation,
                 "agent_steps": list(agent_steps or []),
+                "performance": dict(performance or {}),
                 "selections": [asdict(selection) for selection in selections],
                 "cart_results": [asdict(result) for result in cart_results],
                 "recorded_at": now,
@@ -263,6 +268,7 @@ class CoupangCartAgentLiveWorkflow:
                 "agent_reasoning_summary": "",
                 "last_observation": {},
                 "notification_payload": {},
+                "performance": {"timings_ms": {}, "counts": {}},
                 "success": False,
                 "failed_stage": None,
                 "failure_message": None,
@@ -297,6 +303,7 @@ class CoupangCartAgentLiveWorkflow:
         return graph.compile(checkpointer=checkpointer)
 
     def _load_context_node(self, state: LiveWorkflowState) -> dict[str, object]:
+        started = time.perf_counter()
         request = _shopping_request_from_dict(state["request"])
         thread_id = str(state["thread_id"])
         selection_context = self._operational_store.load_selection_context(
@@ -307,11 +314,17 @@ class CoupangCartAgentLiveWorkflow:
         return {
             "selection_context": _selection_context_to_dict(selection_context),
             "thread_context": thread_context,
+            "performance": _updated_workflow_performance(
+                state.get("performance"),
+                stage="load_context",
+                elapsed_seconds=time.perf_counter() - started,
+            ),
         }
 
     def _agent_plan_node(self, state: LiveWorkflowState) -> dict[str, object]:
         if state.get("failed_stage"):
             return {}
+        started = time.perf_counter()
         request = _shopping_request_from_dict(state["request"])
         selection_context = _selection_context_from_dict(state.get("selection_context", {}))
         plan = self._agent_planner.plan_request(
@@ -319,13 +332,25 @@ class CoupangCartAgentLiveWorkflow:
             prior_purchases=selection_context.prior_purchases,
             recent_session_signals=selection_context.recent_session_signals,
         )
-        return {"agent_plan": plan.as_dict()}
+        return {
+            "agent_plan": plan.as_dict(),
+            "performance": _updated_workflow_performance(
+                state.get("performance"),
+                stage="agent_plan",
+                elapsed_seconds=time.perf_counter() - started,
+                counts={
+                    "planner_call_count": 1,
+                    "planner_aoai_call_count": 1 if plan.mode == "azure_openai" else 0,
+                },
+            ),
+        }
 
     def _browser_shop_node(self, state: LiveWorkflowState) -> dict[str, object]:
         if state.get("failed_stage") or self._shopping_agent is None:
             return {}
         request = _shopping_request_from_dict(state["request"])
         plan = _agent_plan_from_dict(state["agent_plan"])
+        started = time.perf_counter()
         try:
             run = self._shopping_agent.run(
                 request=request,
@@ -341,6 +366,11 @@ class CoupangCartAgentLiveWorkflow:
                 "agent_steps": [],
                 "agent_reasoning_summary": str(exc),
                 "last_observation": {},
+                "performance": _updated_workflow_performance(
+                    state.get("performance"),
+                    stage="browser_shop",
+                    elapsed_seconds=time.perf_counter() - started,
+                ),
                 "success": False,
                 "failed_stage": classified.stage.value,
                 "failure_message": classified.message,
@@ -352,6 +382,13 @@ class CoupangCartAgentLiveWorkflow:
             "cart_results": [_cart_result_to_dict(result) for result in run.cart_results],
             "agent_steps": [_browser_agent_step_to_dict(step) for step in run.steps],
             "agent_reasoning_summary": run.reasoning_summary,
+            "performance": _updated_workflow_performance(
+                state.get("performance"),
+                stage="browser_shop",
+                elapsed_seconds=time.perf_counter() - started,
+                counts=run.performance.get("counts", {}),
+                nested_timings=run.performance.get("timings_ms", {}),
+            ),
             "last_observation": (
                 {}
                 if run.last_observation is None
@@ -366,16 +403,27 @@ class CoupangCartAgentLiveWorkflow:
         if state.get("failed_stage") or state.get("cart_results"):
             return {}
         request = _shopping_request_from_dict(state["request"])
+        started = time.perf_counter()
         try:
             candidates = self._candidate_source(request)
             return {
                 "candidates_by_item": {
                     item_name: [asdict(candidate) for candidate in values]
                     for item_name, values in candidates.items()
-                }
+                },
+                "performance": _updated_workflow_performance(
+                    state.get("performance"),
+                    stage="load_candidates",
+                    elapsed_seconds=time.perf_counter() - started,
+                ),
             }
         except Exception as exc:
             return {
+                "performance": _updated_workflow_performance(
+                    state.get("performance"),
+                    stage="load_candidates",
+                    elapsed_seconds=time.perf_counter() - started,
+                ),
                 "failed_stage": "candidate_fetch",
                 "failure_message": str(exc),
             }
@@ -385,6 +433,7 @@ class CoupangCartAgentLiveWorkflow:
             return {}
         request = _shopping_request_from_dict(state["request"])
         selection_context = _selection_context_from_dict(state.get("selection_context", {}))
+        started = time.perf_counter()
         service = HeuristicProductSelectionService(
             context_store=StaticSelectionContextStore(selection_context)
         )
@@ -396,9 +445,21 @@ class CoupangCartAgentLiveWorkflow:
                     for item_name, values in state.get("candidates_by_item", {}).items()
                 },
             )
-            return {"selections": [asdict(selection) for selection in selections]}
+            return {
+                "selections": [asdict(selection) for selection in selections],
+                "performance": _updated_workflow_performance(
+                    state.get("performance"),
+                    stage="select_products",
+                    elapsed_seconds=time.perf_counter() - started,
+                ),
+            }
         except Exception as exc:
             return {
+                "performance": _updated_workflow_performance(
+                    state.get("performance"),
+                    stage="select_products",
+                    elapsed_seconds=time.perf_counter() - started,
+                ),
                 "failed_stage": "selection",
                 "failure_message": str(exc),
             }
@@ -407,10 +468,16 @@ class CoupangCartAgentLiveWorkflow:
         if state.get("failed_stage") or state.get("cart_results"):
             return {}
         selections = [_selected_product_from_dict(raw) for raw in state.get("selections", [])]
+        started = time.perf_counter()
         try:
             results = self._cart_service.add_products(selections)
         except Exception as exc:
             return {
+                "performance": _updated_workflow_performance(
+                    state.get("performance"),
+                    stage="add_to_cart",
+                    elapsed_seconds=time.perf_counter() - started,
+                ),
                 "failed_stage": "cart_add",
                 "failure_message": str(exc),
             }
@@ -418,12 +485,18 @@ class CoupangCartAgentLiveWorkflow:
         first_failure = next((result for result in results if not result.success), None)
         return {
             "cart_results": [_cart_result_to_dict(result) for result in results],
+            "performance": _updated_workflow_performance(
+                state.get("performance"),
+                stage="add_to_cart",
+                elapsed_seconds=time.perf_counter() - started,
+            ),
             "success": first_failure is None,
             "failed_stage": None if first_failure is None else first_failure.stage.value,
             "failure_message": None if first_failure is None else first_failure.message,
         }
 
     def _notify_node(self, state: LiveWorkflowState) -> dict[str, object]:
+        started = time.perf_counter()
         request = _shopping_request_from_dict(state["request"])
         cart_results = [_cart_result_from_dict(raw) for raw in state.get("cart_results", [])]
         payload = None
@@ -458,12 +531,23 @@ class CoupangCartAgentLiveWorkflow:
             )
 
         if payload is None:
-            return {}
+            return {
+                "performance": _updated_workflow_performance(
+                    state.get("performance"),
+                    stage="notify",
+                    elapsed_seconds=time.perf_counter() - started,
+                )
+            }
 
         try:
             self._notification_service.send(payload)
             return {
                 "notification_payload": _notification_payload_to_dict(payload),
+                "performance": _updated_workflow_performance(
+                    state.get("performance"),
+                    stage="notify",
+                    elapsed_seconds=time.perf_counter() - started,
+                ),
             }
         except Exception as exc:
             prior_failed_stage = state.get("failed_stage")
@@ -476,6 +560,11 @@ class CoupangCartAgentLiveWorkflow:
             )
             result = {
                 "notification_payload": _notification_payload_to_dict(failure_payload),
+                "performance": _updated_workflow_performance(
+                    state.get("performance"),
+                    stage="notify",
+                    elapsed_seconds=time.perf_counter() - started,
+                ),
                 "success": False,
             }
             if prior_failed_stage:
@@ -487,6 +576,7 @@ class CoupangCartAgentLiveWorkflow:
             return result
 
     def _persist_node(self, state: LiveWorkflowState) -> dict[str, object]:
+        started = time.perf_counter()
         envelope = _envelope_from_dict(state["request_envelope"])
         selections = [_selected_product_from_dict(raw) for raw in state.get("selections", [])]
         cart_results = [_cart_result_from_dict(raw) for raw in state.get("cart_results", [])]
@@ -511,6 +601,11 @@ class CoupangCartAgentLiveWorkflow:
             ),
             agent_steps=(
                 None if "agent_steps" not in state else list(state.get("agent_steps", []))
+            ),
+            performance=_updated_workflow_performance(
+                state.get("performance"),
+                stage="persist",
+                elapsed_seconds=time.perf_counter() - started,
             ),
             success=bool(state.get("success", False)),
             failed_stage=state.get("failed_stage"),
@@ -852,6 +947,29 @@ def _parse_datetime(value: object) -> datetime:
     return parsed
 
 
+def _updated_workflow_performance(
+    current: dict[str, object] | None,
+    *,
+    stage: str,
+    elapsed_seconds: float,
+    counts: dict[str, int] | None = None,
+    nested_timings: dict[str, object] | None = None,
+) -> dict[str, object]:
+    base = {"timings_ms": {}, "counts": {}}
+    if isinstance(current, dict):
+        base["timings_ms"] = dict(current.get("timings_ms", {}))
+        base["counts"] = dict(current.get("counts", {}))
+    timings = base["timings_ms"]
+    timings[stage] = round(float(timings.get(stage, 0.0)) + (elapsed_seconds * 1000.0), 2)
+    for key, value in (counts or {}).items():
+        base["counts"][key] = int(base["counts"].get(key, 0)) + int(value)
+    if nested_timings:
+        for key, value in nested_timings.items():
+            metric_key = f"browser_agent.{key}"
+            timings[metric_key] = round(float(timings.get(metric_key, 0.0)) + float(value), 2)
+    return base
+
+
 def _integration_result_from_state(state: LiveWorkflowState) -> IntegrationRunResult:
     return IntegrationRunResult(
         success=bool(state.get("success", False)),
@@ -869,4 +987,5 @@ def _integration_result_from_state(state: LiveWorkflowState) -> IntegrationRunRe
         ),
         failed_stage=state.get("failed_stage"),
         failure_message=state.get("failure_message"),
+        performance=dict(state.get("performance", {})),
     )

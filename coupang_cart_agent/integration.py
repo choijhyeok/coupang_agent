@@ -21,6 +21,7 @@ class IntegrationRunResult:
     notification_payload: NotificationPayload | None = None
     failed_stage: str | None = None
     failure_message: str | None = None
+    performance: dict[str, object] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -33,6 +34,7 @@ class IntegrationRunResult:
             ),
             "failed_stage": self.failed_stage,
             "failure_message": self.failure_message,
+            "performance": dict(self.performance),
         }
 
 
