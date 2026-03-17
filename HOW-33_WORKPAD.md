@@ -22,7 +22,7 @@
 - [x] LLM 호출 수 또는 observation round 수가 기존 대비 줄어든다
 - [x] 속도 최적화 후에도 wrong-item success나 verification bypass가 발생하지 않는다
 - [x] 사용자가 체감하는 첫 응답과 최종 완료 응답의 지연이 모두 개선된다
-- [ ] Branch / commit / publish status recorded
+- [x] Branch / commit / publish status recorded
 
 ### Validation
 
@@ -32,7 +32,7 @@
 - [x] 실제 live request 2건 이상에서 처리 시간 개선 evidence 1건
 - [x] Focused automated tests
 - [x] Full regression
-- [ ] Publish status
+- [x] Publish status
 
 ### Notes / Blockers
 
@@ -100,3 +100,10 @@
 - `HOW-34` (`Backlog`): `[Reliability] Harden live browser session checks against navigation-time execution context resets`
   - Related to `HOW-33`
   - Trigger: live failure-path run `how33-current-water` surfaced a raw navigation-time Playwright execution-context error during session inspection
+
+### Publish
+
+- Branch: `wowogur12/how-33-performance-reduce-live-agent-latency-for-telegram-to-cart`
+- Commit: `345361c22b666f6ff1ac37df039a7a26e335e3eb`
+- Push: `git push -u origin wowogur12/how-33-performance-reduce-live-agent-latency-for-telegram-to-cart` -> success
+- PR: `https://github.com/choijhyeok/coupang_agent/pull/19`
