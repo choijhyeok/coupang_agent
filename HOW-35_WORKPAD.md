@@ -47,6 +47,6 @@
   - None created.
 
 - Publish
-  - Commit: `58f796b2d70d129fa843a082fbf2a74811b4bc83`
   - Push: `git push -u origin wowogur12/how-35-agent-ux-conversational-shopping-proposals` -> success
   - PR: `https://github.com/choijhyeok/coupang_agent/pull/20`
+  - Exact published HEAD SHA is tracked in the Linear `## Codex Workpad` comment.
