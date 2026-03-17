@@ -6,7 +6,7 @@
 - Branch: `how-31-goal-driven-recovery-loop`
 - Workspace: `/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-31`
 - Issue type: feature module
-- Linear state: active
+- Linear state: `Human Review`
 
 ### Plan
 
