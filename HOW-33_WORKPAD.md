@@ -6,7 +6,7 @@
 - Branch: `wowogur12/how-33-performance-reduce-live-agent-latency-for-telegram-to-cart`
 - Workspace: `/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-33`
 - Issue type: follow-up/refinement
-- Linear state: `Todo`
+- Linear state: `In Progress`
 
 ### Plan
 
@@ -94,6 +94,12 @@
   - `tests.test_cart_verification.CartVerificationTests.test_verifier_rejects_false_success_when_cart_contains_different_item`
   - `tests.test_cart_verification.CartVerificationTests.test_aoai_verifier_skips_network_when_deterministic_fast_path_succeeds`
   - `tests.test_live_browser_agent.LiveBrowserAgentTests.test_agent_runs_search_to_cart_without_fixed_url`
+- PR review sweep:
+  - PR `#19` state: `OPEN`
+  - review decision: none
+  - top-level PR comments: none
+  - review entries: none
+  - inline review threads requiring action: none
 
 ### Follow-up Issues Created
 
@@ -104,6 +110,6 @@
 ### Publish
 
 - Branch: `wowogur12/how-33-performance-reduce-live-agent-latency-for-telegram-to-cart`
-- Commit: `345361c22b666f6ff1ac37df039a7a26e335e3eb`
+- Commit: `8102ddd2162b134832934970df98bc0ae593db62`
 - Push: `git push -u origin wowogur12/how-33-performance-reduce-live-agent-latency-for-telegram-to-cart` -> success
 - PR: `https://github.com/choijhyeok/coupang_agent/pull/19`
