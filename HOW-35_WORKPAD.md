@@ -67,9 +67,10 @@
   - Human unblock step: either provide a live-search-backed request/product set with at least one currently purchasable candidate, or approve a fresh fixture tied to a known addable Coupang product so the confirmation path can be re-run to a green verification result.
 
 - Follow-up Issues
-  - Candidate fallback after live confirmation failure should likely be tracked as a follow-up if we want the bot to auto-offer the next candidate after `out_of_stock` or `verification_mismatch`.
+  - Created `HOW-36` Backlog: `[Agent UX] Auto-fallback to next proposal candidate after confirmation add-to-cart failure`
+  - Link: `https://linear.app/choijhyeok/issue/HOW-36/agent-ux-auto-fallback-to-next-proposal-candidate-after-confirmation`
 
 - Publish
   - Push: `git push -u origin wowogur12/how-35-agent-ux-conversational-shopping-proposals` -> success
   - PR: `https://github.com/choijhyeok/coupang_agent/pull/20`
-  - Exact published HEAD SHA is tracked in the Linear `## Codex Workpad` comment.
+  - Published HEAD SHA: `256526c569fd7eeff64767fc7adaf83832116412`
