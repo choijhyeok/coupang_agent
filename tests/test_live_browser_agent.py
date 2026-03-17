@@ -33,12 +33,20 @@ class FakeCartSnapshot:
 
 
 class SequencedBrowserDriver:
-    def __init__(self, observations: list[BrowserObservation], *, checkout_started: bool = False) -> None:
+    def __init__(
+        self,
+        observations: list[BrowserObservation],
+        *,
+        checkout_started: bool = False,
+        verification_observations: list[BrowserObservation] | None = None,
+    ) -> None:
         self._observations = observations
         self._observe_calls = 0
         self._cart_snapshots = [FakeCartSnapshot(0), FakeCartSnapshot(1)]
         self._snapshot_calls = 0
         self._checkout_started = checkout_started
+        self._verification_observations = verification_observations or []
+        self._verification_calls = 0
         self.executed_actions: list[str] = []
         self.executed_action_objects: list[object] = []
 
@@ -62,6 +70,10 @@ class SequencedBrowserDriver:
         return self._observations[index]
 
     def observe_cart_verification(self) -> BrowserObservation:
+        if self._verification_observations:
+            index = min(self._verification_calls, len(self._verification_observations) - 1)
+            self._verification_calls += 1
+            return self._verification_observations[index]
         source = self._observations[-1]
         selected_name = str(source.selected_product_hint.get("name") or source.body_text_excerpt or "검증 상품").strip()
         quantity = self._cart_snapshots[-1].item_count or 1
@@ -636,6 +648,265 @@ class LiveBrowserAgentTests(unittest.TestCase):
         self.assertFalse(result.cart_results[0].success)
         self.assertEqual(result.cart_results[0].failure_reason, CartAddFailureReason.OUT_OF_STOCK)
         self.assertEqual(result.cart_results[0].stage.value, "product_page")
+
+    def test_agent_scrolls_when_add_to_cart_exists_below_fold(self) -> None:
+        driver = SequencedBrowserDriver(
+            [
+                BrowserObservation(
+                    step_index=1,
+                    url="https://www.coupang.com/vp/products/CEREAL-1",
+                    title="상품 상세",
+                    page_kind="product_page",
+                    body_text_excerpt="시리얼 상품 상세",
+                    interactive_elements=["button:더보기"],
+                    selected_product_hint={
+                        "name": "켈로그 시리얼 550g",
+                        "href": "https://www.coupang.com/vp/products/CEREAL-1",
+                    },
+                    add_to_cart_available=True,
+                    add_to_cart_visible=False,
+                    add_to_cart_in_viewport=False,
+                    observation_engine="scrapling",
+                ),
+                BrowserObservation(
+                    step_index=2,
+                    url="https://www.coupang.com/vp/products/CEREAL-1",
+                    title="상품 상세",
+                    page_kind="product_page",
+                    body_text_excerpt="켈로그 시리얼 550g 장바구니 담기",
+                    interactive_elements=["button:장바구니 담기"],
+                    selected_product_hint={
+                        "name": "켈로그 시리얼 550g",
+                        "href": "https://www.coupang.com/vp/products/CEREAL-1",
+                    },
+                    add_to_cart_available=True,
+                    add_to_cart_visible=True,
+                    add_to_cart_in_viewport=True,
+                    observation_engine="scrapling",
+                ),
+            ]
+        )
+        agent = CoupangLiveBrowserShoppingAgent(driver=driver, model=DeterministicBrowserAgentModel())
+
+        result = agent.run(
+            request=self._request(text="시리얼 1개 담아줘", item_name="시리얼"),
+            search_queries={"시리얼": "시리얼"},
+            operator_note="Scroll when the CTA exists below the fold.",
+            selection_brief="Recover by scrolling and reobserving before giving up.",
+        )
+
+        self.assertEqual(driver.executed_actions, ["scroll", "add_to_cart"])
+        self.assertTrue(result.cart_results[0].success)
+        self.assertEqual(result.steps[0].action.action_type, BrowserAgentActionType.SCROLL)
+
+    def test_agent_replans_to_substitute_when_first_product_is_purchase_restricted(self) -> None:
+        driver = SequencedBrowserDriver(
+            [
+                BrowserObservation(
+                    step_index=1,
+                    url="https://www.coupang.com/np/search?q=%EC%8B%9C%EB%A6%AC%EC%96%BC",
+                    title="검색 결과",
+                    page_kind="search_results",
+                    body_text_excerpt="시리얼 검색 결과",
+                    observed_products=[
+                        ObservedProduct(
+                            name="제한 시리얼 500g",
+                            href="https://www.coupang.com/vp/products/CEREAL-RESTRICTED",
+                            price_text="7,900원",
+                            rating_text="4.9",
+                            review_count_text="500",
+                        ),
+                        ObservedProduct(
+                            name="대체 시리얼 550g",
+                            href="https://www.coupang.com/vp/products/CEREAL-ALT",
+                            price_text="8,400원",
+                            rating_text="4.8",
+                            review_count_text="1400",
+                        ),
+                    ],
+                    observation_engine="scrapling",
+                ),
+                BrowserObservation(
+                    step_index=2,
+                    url="https://www.coupang.com/vp/products/CEREAL-RESTRICTED",
+                    title="상품 상세",
+                    page_kind="product_page",
+                    body_text_excerpt="로켓프레시 상품은 장바구니에 담을 수 없습니다.",
+                    selected_product_hint={
+                        "name": "제한 시리얼 500g",
+                        "href": "https://www.coupang.com/vp/products/CEREAL-RESTRICTED",
+                    },
+                    purchase_blocked_reason="rocket_fresh_restriction",
+                    observation_engine="scrapling",
+                ),
+                BrowserObservation(
+                    step_index=3,
+                    url="https://www.coupang.com/np/search?q=%EC%8B%9C%EB%A6%AC%EC%96%BC",
+                    title="검색 결과",
+                    page_kind="search_results",
+                    body_text_excerpt="시리얼 검색 결과",
+                    observed_products=[
+                        ObservedProduct(
+                            name="제한 시리얼 500g",
+                            href="https://www.coupang.com/vp/products/CEREAL-RESTRICTED",
+                            price_text="7,900원",
+                            rating_text="4.9",
+                            review_count_text="500",
+                        ),
+                        ObservedProduct(
+                            name="대체 시리얼 550g",
+                            href="https://www.coupang.com/vp/products/CEREAL-ALT",
+                            price_text="8,400원",
+                            rating_text="4.8",
+                            review_count_text="1400",
+                        ),
+                    ],
+                    observation_engine="scrapling",
+                ),
+                BrowserObservation(
+                    step_index=4,
+                    url="https://www.coupang.com/vp/products/CEREAL-ALT",
+                    title="상품 상세",
+                    page_kind="product_page",
+                    body_text_excerpt="대체 시리얼 550g 장바구니 담기",
+                    selected_product_hint={
+                        "name": "대체 시리얼 550g",
+                        "href": "https://www.coupang.com/vp/products/CEREAL-ALT",
+                    },
+                    add_to_cart_available=True,
+                    add_to_cart_visible=True,
+                    observation_engine="scrapling",
+                ),
+            ]
+        )
+        agent = CoupangLiveBrowserShoppingAgent(driver=driver, model=DeterministicBrowserAgentModel())
+
+        result = agent.run(
+            request=self._request(text="시리얼 1개 담아줘", item_name="시리얼"),
+            search_queries={"시리얼": "시리얼"},
+            operator_note="Retry with a substitute when the first product cannot be added to cart.",
+            selection_brief="Preserve item intent across substitute recovery.",
+        )
+
+        self.assertEqual(driver.executed_actions, ["click", "go_back", "click", "add_to_cart"])
+        self.assertTrue(result.cart_results[0].success)
+        self.assertEqual(result.selections[0].candidate.product_id, "CEREAL-ALT")
+
+    def test_agent_blocks_false_success_and_recovers_after_wrong_cart_verification(self) -> None:
+        driver = SequencedBrowserDriver(
+            [
+                BrowserObservation(
+                    step_index=1,
+                    url="https://www.coupang.com/np/search?q=%EC%8B%9C%EB%A6%AC%EC%96%BC",
+                    title="검색 결과",
+                    page_kind="search_results",
+                    body_text_excerpt="시리얼 검색 결과",
+                    observed_products=[
+                        ObservedProduct(
+                            name="시리얼 500g",
+                            href="https://www.coupang.com/vp/products/CEREAL-1",
+                            price_text="7,900원",
+                            rating_text="4.8",
+                            review_count_text="900",
+                        ),
+                        ObservedProduct(
+                            name="시리얼 550g",
+                            href="https://www.coupang.com/vp/products/CEREAL-2",
+                            price_text="8,400원",
+                            rating_text="4.8",
+                            review_count_text="1300",
+                        ),
+                    ],
+                    observation_engine="scrapling",
+                ),
+                BrowserObservation(
+                    step_index=2,
+                    url="https://www.coupang.com/vp/products/CEREAL-1",
+                    title="상품 상세",
+                    page_kind="product_page",
+                    body_text_excerpt="시리얼 500g 장바구니 담기",
+                    selected_product_hint={
+                        "name": "시리얼 500g",
+                        "href": "https://www.coupang.com/vp/products/CEREAL-1",
+                    },
+                    add_to_cart_available=True,
+                    add_to_cart_visible=True,
+                    observation_engine="scrapling",
+                ),
+                BrowserObservation(
+                    step_index=3,
+                    url="https://www.coupang.com/np/search?q=%EC%8B%9C%EB%A6%AC%EC%96%BC",
+                    title="검색 결과",
+                    page_kind="search_results",
+                    body_text_excerpt="시리얼 검색 결과",
+                    observed_products=[
+                        ObservedProduct(
+                            name="시리얼 500g",
+                            href="https://www.coupang.com/vp/products/CEREAL-1",
+                            price_text="7,900원",
+                            rating_text="4.8",
+                            review_count_text="900",
+                        ),
+                        ObservedProduct(
+                            name="시리얼 550g",
+                            href="https://www.coupang.com/vp/products/CEREAL-2",
+                            price_text="8,400원",
+                            rating_text="4.8",
+                            review_count_text="1300",
+                        ),
+                    ],
+                    observation_engine="scrapling",
+                ),
+                BrowserObservation(
+                    step_index=4,
+                    url="https://www.coupang.com/vp/products/CEREAL-2",
+                    title="상품 상세",
+                    page_kind="product_page",
+                    body_text_excerpt="시리얼 550g 장바구니 담기",
+                    selected_product_hint={
+                        "name": "시리얼 550g",
+                        "href": "https://www.coupang.com/vp/products/CEREAL-2",
+                    },
+                    add_to_cart_available=True,
+                    add_to_cart_visible=True,
+                    observation_engine="scrapling",
+                ),
+            ],
+            verification_observations=[
+                BrowserObservation(
+                    step_index=0,
+                    url="https://cart.coupang.com/cartView.pang",
+                    title="쿠팡 장바구니",
+                    page_kind="browse",
+                    body_text_excerpt="양파 추천 수량 1",
+                    cart_items=[ObservedCartItem(name="양파 추천", quantity=1, quantity_text="1개")],
+                    screenshot_base64="ZmFrZS1jYXJ0LXNuYXBzaG90",
+                    observation_engine="scrapling",
+                ),
+                BrowserObservation(
+                    step_index=0,
+                    url="https://cart.coupang.com/cartView.pang",
+                    title="쿠팡 장바구니",
+                    page_kind="browse",
+                    body_text_excerpt="시리얼 550g 수량 1",
+                    cart_items=[ObservedCartItem(name="시리얼 550g", quantity=1, quantity_text="1개")],
+                    screenshot_base64="ZmFrZS1jYXJ0LXNuYXBzaG90",
+                    observation_engine="scrapling",
+                ),
+            ],
+        )
+        agent = CoupangLiveBrowserShoppingAgent(driver=driver, model=DeterministicBrowserAgentModel())
+
+        result = agent.run(
+            request=self._request(text="시리얼 1개 담아줘", item_name="시리얼"),
+            search_queries={"시리얼": "시리얼"},
+            operator_note="Never send success until the requested category is verified in cart.",
+            selection_brief="Recover from wrong-cart verification by trying a substitute result.",
+        )
+
+        self.assertEqual(driver.executed_actions, ["click", "add_to_cart", "go_back", "click", "add_to_cart"])
+        self.assertTrue(result.cart_results[0].success)
+        self.assertEqual(result.cart_results[0].evidence["goal_check"]["matched_item"]["name"], "시리얼 550g")
 
 
 class BrowserWorkflowIntegrationTests(unittest.TestCase):

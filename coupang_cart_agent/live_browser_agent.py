@@ -96,11 +96,11 @@ class AzureOpenAIBrowserAgent:
                         "You are a browser shopping agent for Coupang. "
                         "Never checkout or pay. "
                         "Return strict JSON with keys: action_type, target_text, target_role, target_href, "
-                        "query, option_label, value, wait_seconds, reasoning_summary, blocker_reason. "
-                        "Allowed action_type values: search, click, select_option, add_to_cart, wait, stop. "
+                        "query, option_label, value, scroll_amount, wait_seconds, reasoning_summary, blocker_reason. "
+                        "Allowed action_type values: search, click, select_option, add_to_cart, scroll, go_back, wait, stop. "
                         "Use blocker_reason only when action_type=stop. "
                         "Allowed blocker_reason values: login_required, security_challenge, access_denied, "
-                        "out_of_stock, option_mismatch, ambiguity, ui_element_not_found, unknown."
+                        "out_of_stock, option_mismatch, ambiguity, ui_element_not_found, purchase_restricted, unknown."
                     ),
                 },
                 _build_user_message(context=context, observation=observation),
@@ -157,6 +157,15 @@ class DeterministicBrowserAgentModel:
                 blocker_reason=CartAddFailureReason.OUT_OF_STOCK,
                 reasoning_summary="Current product state indicates the item is sold out.",
             )
+        if observation.purchase_blocked_reason:
+            return BrowserAgentAction(
+                action_type=BrowserAgentActionType.STOP,
+                blocker_reason=CartAddFailureReason.PURCHASE_RESTRICTED,
+                reasoning_summary=(
+                    "Current product cannot be added to cart due to purchase restrictions. "
+                    "Try an alternate product that preserves the same shopping intent."
+                ),
+            )
         if observation.available_options:
             matched = _match_option(context.item, observation.available_options)
             if matched is not None:
@@ -172,6 +181,19 @@ class DeterministicBrowserAgentModel:
                 blocker_reason=CartAddFailureReason.AMBIGUITY,
                 reasoning_summary="Visible options do not map cleanly to the request constraints.",
             )
+        if observation.page_kind == "product_page" and observation.add_to_cart_available and not observation.add_to_cart_visible:
+            return BrowserAgentAction(
+                action_type=BrowserAgentActionType.SCROLL,
+                scroll_amount=900,
+                reasoning_summary="Add-to-cart exists on the page but is outside the viewport, so scroll and reobserve.",
+            )
+        if observation.page_kind == "product_page" and observation.expandable_sections:
+            return BrowserAgentAction(
+                action_type=BrowserAgentActionType.CLICK,
+                target_text=observation.expandable_sections[0],
+                target_role="button",
+                reasoning_summary="Expand the product section before giving up on the CTA.",
+            )
 
         if observation.add_to_cart_visible:
             return BrowserAgentAction(
@@ -182,14 +204,20 @@ class DeterministicBrowserAgentModel:
             )
 
         if observation.page_kind == "search_results" and observation.observed_products:
-            chosen = _rank_observed_products(
+            ranked = _rank_observed_products(
                 observation.observed_products,
-                preferred_terms=[context.item.name, context.search_query],
+                preferred_terms=_preferred_terms_for_item(context.item, context.search_query),
             )[0]
+            if _intent_overlap_score(context.item, ranked) <= 0:
+                return BrowserAgentAction(
+                    action_type=BrowserAgentActionType.SEARCH,
+                    query=context.search_query,
+                    reasoning_summary="Visible search results do not match the requested intent strongly enough yet.",
+                )
             return BrowserAgentAction(
                 action_type=BrowserAgentActionType.CLICK,
-                target_text=chosen.name,
-                target_href=chosen.href,
+                target_text=ranked.name,
+                target_href=ranked.href,
                 target_role="link",
                 reasoning_summary="Open the best visible search result using rating, reviews, and price clues.",
             )
@@ -243,12 +271,16 @@ class CoupangLiveBrowserShoppingAgent:
             selected_product: SelectedProduct | None = None
             selected_options: dict[str, str] = {}
             search_query = _coerce_search_query(item, search_queries.get(item.name, item.name))
+            attempted_product_hrefs: set[str] = set()
+            attempted_queries: list[str] = [search_query]
+            item_step_count = 0
 
-            for step_index in range(1, self._max_steps_per_item + 1):
+            while item_step_count < self._max_steps_per_item:
                 observation = self._driver.observe(
                     step_index=len(steps) + 1,
                     last_action_summary=None if not steps else steps[-1].execution_summary,
                 )
+                item_step_count += 1
                 last_observation = observation
                 context = BrowserAgentContext(
                     request=request,
@@ -258,11 +290,46 @@ class CoupangLiveBrowserShoppingAgent:
                     selection_brief=selection_brief,
                     prior_steps=[step for step in steps if step.item_name == item.name],
                 )
-                action = self._model.decide(context=context, observation=observation)
+                recovery_action = _recovery_action_for_observation(
+                    item=item,
+                    observation=observation,
+                    selected_product=selected_product,
+                    search_query=search_query,
+                    attempted_product_hrefs=attempted_product_hrefs,
+                    attempted_queries=attempted_queries,
+                    prior_steps=context.prior_steps,
+                )
+                action = recovery_action or self._model.decide(context=context, observation=observation)
                 action = _coerce_action_for_context(action=action, context=context, observation=observation)
 
                 if action.action_type == BrowserAgentActionType.STOP:
                     failure_reason = action.blocker_reason or _classify_observation(observation)
+                    fallback_recovery = _recovery_action_after_failure(
+                        item=item,
+                        observation=observation,
+                        selected_product=selected_product,
+                        failure_reason=failure_reason,
+                        search_query=search_query,
+                        attempted_product_hrefs=attempted_product_hrefs,
+                        attempted_queries=attempted_queries,
+                        prior_steps=context.prior_steps,
+                    )
+                    if fallback_recovery is not None and item_step_count < self._max_steps_per_item:
+                        execution_summary = self._driver.execute_action(fallback_recovery)
+                        steps.append(
+                            BrowserAgentStep(
+                                step_index=len(steps) + 1,
+                                item_name=item.name,
+                                observation=observation,
+                                action=fallback_recovery,
+                                execution_summary=execution_summary,
+                            )
+                        )
+                        if fallback_recovery.action_type == BrowserAgentActionType.SEARCH and fallback_recovery.query:
+                            search_query = fallback_recovery.query
+                            if search_query not in attempted_queries:
+                                attempted_queries.append(search_query)
+                        continue
                     selection = selected_product or _selection_from_observation(
                         item=item,
                         observation=observation,
@@ -347,6 +414,36 @@ class CoupangLiveBrowserShoppingAgent:
                         cart_count_after=after.item_count,
                     )
                     if not verification.success:
+                        attempted_product_hrefs.add(selected_product.candidate.product_url)
+                        goal_recovery = _recovery_action_after_goal_check(
+                            item=item,
+                            verification_observation=verification_observation,
+                            verification_failure_reason=(
+                                verification.failure_reason or CartAddFailureReason.MANUAL_REVIEW_REQUIRED
+                            ),
+                            search_query=search_query,
+                            attempted_product_hrefs=attempted_product_hrefs,
+                            attempted_queries=attempted_queries,
+                            prior_steps=context.prior_steps,
+                        )
+                        if goal_recovery is not None and item_step_count < self._max_steps_per_item:
+                            execution_summary = self._driver.execute_action(goal_recovery)
+                            steps.append(
+                                BrowserAgentStep(
+                                    step_index=len(steps) + 1,
+                                    item_name=item.name,
+                                    observation=verification_observation,
+                                    action=goal_recovery,
+                                    execution_summary=execution_summary,
+                                )
+                            )
+                            if goal_recovery.action_type == BrowserAgentActionType.SEARCH and goal_recovery.query:
+                                search_query = goal_recovery.query
+                                if search_query not in attempted_queries:
+                                    attempted_queries.append(search_query)
+                            selected_product = None
+                            selected_options = {}
+                            continue
                         cart_results.append(
                             CartAddResult(
                                 success=False,
@@ -367,6 +464,7 @@ class CoupangLiveBrowserShoppingAgent:
                                     "reasoning_summary": action.reasoning_summary,
                                     "last_observation": asdict(observation),
                                     "verification": verification.evidence,
+                                    "goal_check": verification.evidence,
                                 },
                             )
                         )
@@ -394,6 +492,7 @@ class CoupangLiveBrowserShoppingAgent:
                                 "reasoning_summary": action.reasoning_summary,
                                 "last_observation": asdict(observation),
                                 "verification": verification.evidence,
+                                "goal_check": verification.evidence,
                             },
                         )
                     )
@@ -422,6 +521,11 @@ class CoupangLiveBrowserShoppingAgent:
                         target_text=action.target_text,
                         target_href=action.target_href,
                     )
+                    attempted_product_hrefs.add(selected_product.candidate.product_url)
+                if action.action_type == BrowserAgentActionType.SEARCH and action.query:
+                    search_query = action.query
+                    if search_query not in attempted_queries:
+                        attempted_queries.append(search_query)
             else:
                 failure_observation = last_observation or BrowserObservation(
                     step_index=len(steps) + 1,
@@ -514,6 +618,7 @@ def _browser_action_from_dict(raw: dict[str, object]) -> BrowserAgentAction:
     if blocker_raw not in (None, ""):
         blocker_reason = CartAddFailureReason(str(blocker_raw))
     wait_seconds = raw.get("wait_seconds")
+    scroll_amount = raw.get("scroll_amount")
     return BrowserAgentAction(
         action_type=action_type,
         target_text=_optional_text(raw.get("target_text")),
@@ -522,6 +627,7 @@ def _browser_action_from_dict(raw: dict[str, object]) -> BrowserAgentAction:
         query=_optional_text(raw.get("query")),
         option_label=_optional_text(raw.get("option_label")),
         value=_optional_text(raw.get("value")),
+        scroll_amount=None if scroll_amount in (None, "") else int(scroll_amount),
         wait_seconds=None if wait_seconds in (None, "") else float(wait_seconds),
         reasoning_summary=str(raw.get("reasoning_summary", "")).strip(),
         blocker_reason=blocker_reason,
@@ -572,11 +678,268 @@ def _should_force_search_from_cart_browse(
     )
 
 
+def _recovery_action_for_observation(
+    *,
+    item: RequestedItem,
+    observation: BrowserObservation,
+    selected_product: SelectedProduct | None,
+    search_query: str,
+    attempted_product_hrefs: set[str],
+    attempted_queries: list[str],
+    prior_steps: list[BrowserAgentStep],
+) -> BrowserAgentAction | None:
+    if observation.page_kind == "product_page":
+        if (
+            selected_product is not None
+            and _intent_overlap_score(item, _pick_observed_product(observation=observation, target_text=None, target_href=None, fallback_name=item.name)) <= 0
+            and _step_attempt_count(prior_steps, BrowserAgentActionType.GO_BACK) < 2
+        ):
+            return BrowserAgentAction(
+                action_type=BrowserAgentActionType.GO_BACK,
+                reasoning_summary="Current detail page drifted away from the requested category, so return to results.",
+            )
+        if observation.purchase_blocked_reason or _observation_indicates_out_of_stock(observation):
+            return _substitute_recovery_action(
+                item=item,
+                observation=observation,
+                search_query=search_query,
+                attempted_queries=attempted_queries,
+                prior_steps=prior_steps,
+                reason=(
+                    "Current product cannot be purchased or added to cart, so recover by selecting a substitute "
+                    "that preserves the same intent."
+                ),
+            )
+        if observation.add_to_cart_available and not observation.add_to_cart_visible:
+            if _step_attempt_count(prior_steps, BrowserAgentActionType.SCROLL) < 2:
+                return BrowserAgentAction(
+                    action_type=BrowserAgentActionType.SCROLL,
+                    scroll_amount=900,
+                    reasoning_summary="Add-to-cart was discovered below the fold. Scroll and scan again.",
+                )
+        for expandable in observation.expandable_sections:
+            if not _has_clicked_target(prior_steps, expandable):
+                return BrowserAgentAction(
+                    action_type=BrowserAgentActionType.CLICK,
+                    target_text=expandable,
+                    target_role="button",
+                    reasoning_summary="Expand the visible section before abandoning the current product page.",
+                )
+
+    if observation.page_kind == "search_results":
+        alternate = _best_alternate_product(
+            item=item,
+            products=observation.observed_products,
+            attempted_product_hrefs=attempted_product_hrefs,
+            preferred_terms=_preferred_terms_for_item(item, search_query),
+        )
+        if alternate is not None:
+            return BrowserAgentAction(
+                action_type=BrowserAgentActionType.CLICK,
+                target_text=alternate.name,
+                target_href=alternate.href,
+                target_role="link",
+                reasoning_summary="Select the best remaining result that still matches the user intent.",
+            )
+        refined_query = _next_substitute_query(item=item, search_query=search_query, attempted_queries=attempted_queries)
+        if refined_query is not None:
+            return BrowserAgentAction(
+                action_type=BrowserAgentActionType.SEARCH,
+                query=refined_query,
+                reasoning_summary="Re-search with the same brand, pack-size, and category intent after exhausting visible matches.",
+            )
+    return None
+
+
+def _recovery_action_after_failure(
+    *,
+    item: RequestedItem,
+    observation: BrowserObservation,
+    selected_product: SelectedProduct | None,
+    failure_reason: CartAddFailureReason,
+    search_query: str,
+    attempted_product_hrefs: set[str],
+    attempted_queries: list[str],
+    prior_steps: list[BrowserAgentStep],
+) -> BrowserAgentAction | None:
+    if failure_reason in (
+        CartAddFailureReason.OUT_OF_STOCK,
+        CartAddFailureReason.PURCHASE_RESTRICTED,
+        CartAddFailureReason.UI_ELEMENT_NOT_FOUND,
+        CartAddFailureReason.AMBIGUITY,
+    ):
+        return _recovery_action_for_observation(
+            item=item,
+            observation=observation,
+            selected_product=selected_product,
+            search_query=search_query,
+            attempted_product_hrefs=attempted_product_hrefs,
+            attempted_queries=attempted_queries,
+            prior_steps=prior_steps,
+        ) or _substitute_recovery_action(
+            item=item,
+            observation=observation,
+            search_query=search_query,
+            attempted_queries=attempted_queries,
+            prior_steps=prior_steps,
+            reason="Recover from the current blocker by returning to search and choosing an alternate product.",
+        )
+    return None
+
+
+def _recovery_action_after_goal_check(
+    *,
+    item: RequestedItem,
+    verification_observation: BrowserObservation,
+    verification_failure_reason: CartAddFailureReason,
+    search_query: str,
+    attempted_product_hrefs: set[str],
+    attempted_queries: list[str],
+    prior_steps: list[BrowserAgentStep],
+) -> BrowserAgentAction | None:
+    if verification_failure_reason not in (
+        CartAddFailureReason.VERIFICATION_MISMATCH,
+        CartAddFailureReason.MANUAL_REVIEW_REQUIRED,
+    ):
+        return None
+    return _substitute_recovery_action(
+        item=item,
+        observation=verification_observation,
+        search_query=search_query,
+        attempted_queries=attempted_queries,
+        prior_steps=prior_steps,
+        reason=(
+            "Goal check did not confirm the requested item in cart, so continue recovery instead of sending success."
+        ),
+    )
+
+
+def _substitute_recovery_action(
+    *,
+    item: RequestedItem,
+    observation: BrowserObservation,
+    search_query: str,
+    attempted_queries: list[str],
+    prior_steps: list[BrowserAgentStep],
+    reason: str,
+) -> BrowserAgentAction | None:
+    if observation.page_kind != "search_results" and _step_attempt_count(prior_steps, BrowserAgentActionType.GO_BACK) < 2:
+        return BrowserAgentAction(
+            action_type=BrowserAgentActionType.GO_BACK,
+            reasoning_summary=reason,
+        )
+    refined_query = _next_substitute_query(item=item, search_query=search_query, attempted_queries=attempted_queries)
+    if refined_query is not None:
+        return BrowserAgentAction(
+            action_type=BrowserAgentActionType.SEARCH,
+            query=refined_query,
+            reasoning_summary=reason,
+        )
+    return None
+
+
+def _step_attempt_count(prior_steps: list[BrowserAgentStep], action_type: BrowserAgentActionType) -> int:
+    return sum(1 for step in prior_steps if step.action.action_type == action_type)
+
+
+def _has_clicked_target(prior_steps: list[BrowserAgentStep], target_text: str) -> bool:
+    return any(
+        step.action.action_type == BrowserAgentActionType.CLICK and (step.action.target_text or "") == target_text
+        for step in prior_steps
+    )
+
+
+def _best_alternate_product(
+    *,
+    item: RequestedItem,
+    products: list[ObservedProduct],
+    attempted_product_hrefs: set[str],
+    preferred_terms: list[str],
+) -> ObservedProduct | None:
+    candidates = [
+        product
+        for product in _rank_observed_products(products, preferred_terms=preferred_terms)
+        if (product.href or "") not in attempted_product_hrefs and _intent_overlap_score(item, product) > 0
+    ]
+    return candidates[0] if candidates else None
+
+
+def _next_substitute_query(
+    *,
+    item: RequestedItem,
+    search_query: str,
+    attempted_queries: list[str],
+) -> str | None:
+    candidates = [search_query, _intent_preserving_query(item)]
+    for candidate in candidates:
+        normalized = candidate.strip()
+        if normalized and normalized not in attempted_queries:
+            return normalized
+    return None
+
+
+def _intent_preserving_query(item: RequestedItem) -> str:
+    parts = [
+        item.explicit_brand or "",
+        item.name,
+        item.explicit_unit_size or "",
+        _explicit_pack_text(item),
+        *item.constraints,
+    ]
+    normalized_parts: list[str] = []
+    for part in parts:
+        text = str(part or "").strip()
+        if text and text not in normalized_parts:
+            normalized_parts.append(text)
+    return " ".join(normalized_parts)
+
+
+def _explicit_pack_text(item: RequestedItem) -> str:
+    if item.explicit_pack_count and item.explicit_pack_unit:
+        return f"{item.explicit_pack_count}{item.explicit_pack_unit}"
+    return ""
+
+
+def _preferred_terms_for_item(item: RequestedItem, search_query: str) -> list[str]:
+    return [
+        term
+        for term in [
+            item.name,
+            search_query,
+            item.explicit_brand,
+            item.explicit_unit_size,
+            _explicit_pack_text(item),
+            *item.constraints,
+        ]
+        if term
+    ]
+
+
+def _intent_overlap_score(item: RequestedItem, product: ObservedProduct) -> int:
+    request_tokens = _semantic_tokens(" ".join(_preferred_terms_for_item(item, item.name)))
+    product_tokens = _semantic_tokens(product.name)
+    if not request_tokens or not product_tokens:
+        return 0
+    overlap = request_tokens & product_tokens
+    score = len(overlap)
+    if item.explicit_brand and item.explicit_brand.lower() in product.name.lower():
+        score += 2
+    if item.explicit_unit_size and item.explicit_unit_size.lower() in product.name.lower():
+        score += 1
+    return score
+
+
+def _semantic_tokens(value: str) -> set[str]:
+    return {token for token in re.split(r"[^0-9a-zA-Z가-힣]+", value.lower()) if len(token) >= 1}
+
+
 def _classify_observation(observation: BrowserObservation) -> CartAddFailureReason:
     if observation.blocker_hint:
         blocker_reason = _classify_blocker_hint(observation.blocker_hint)
         if blocker_reason is not None:
             return blocker_reason
+    if observation.purchase_blocked_reason:
+        return CartAddFailureReason.PURCHASE_RESTRICTED
     if _observation_indicates_out_of_stock(observation):
         return CartAddFailureReason.OUT_OF_STOCK
     lowered = observation.body_text_excerpt.lower()
@@ -599,6 +962,8 @@ def _classify_blocker_hint(blocker_hint: str) -> CartAddFailureReason | None:
         return CartAddFailureReason.LOGIN_REQUIRED
     if "품절" in blocker_hint:
         return CartAddFailureReason.OUT_OF_STOCK
+    if "purchase" in lowered or "구매 제한" in blocker_hint or "장바구니에 담을 수 없" in blocker_hint:
+        return CartAddFailureReason.PURCHASE_RESTRICTED
     return None
 
 

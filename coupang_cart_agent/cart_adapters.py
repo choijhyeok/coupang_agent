@@ -34,6 +34,7 @@ from .contracts import (
     SelectedProduct,
 )
 from .live_browser_agent import encode_screenshot_bytes
+from .scrapling_adapter import ScraplingObservationAdapter
 
 
 class DemoCoupangCartPage:
@@ -183,6 +184,8 @@ class PlaywrightCoupangCartPage:
         self._browser: Browser | None = None
         self._context: BrowserContext | None = None
         self._page: Page | None = None
+        self._scrapling_adapter = ScraplingObservationAdapter()
+        self._last_action_hints: dict[str, object] = {}
 
     def close(self) -> None:
         if self._context is not None and self._settings.storage_state_path:
@@ -342,6 +345,7 @@ class PlaywrightCoupangCartPage:
         if blocker_hint is None:
             blocker_hint = self._infer_session_blocker_hint(page=page, body_text=body_text)
         snapshot = self._extract_browser_snapshot(page)
+        self._last_action_hints = dict(snapshot.pop("action_hints", {}))
         screenshot_dir = Path(".artifacts/browser-agent")
         screenshot_dir.mkdir(parents=True, exist_ok=True)
         screenshot_path = screenshot_dir / f"{screenshot_label}.png"
@@ -388,15 +392,24 @@ class PlaywrightCoupangCartPage:
         selected_product_hint = dict(selected_hint) if isinstance(selected_hint, dict) else {}
         available_options = self._normalize_available_options(snapshot.get("available_options", []))
         add_to_cart_visible = bool(snapshot.get("add_to_cart_visible", False))
+        add_to_cart_available = bool(snapshot.get("add_to_cart_available", False))
+        add_to_cart_in_viewport = bool(snapshot.get("add_to_cart_in_viewport", False))
+        sticky_add_to_cart_visible = bool(snapshot.get("sticky_add_to_cart_visible", False))
         if self._is_cart_page_url(page.url):
             observed_products = []
             selected_product_hint = {}
             available_options = []
             add_to_cart_visible = False
+            add_to_cart_available = False
+            add_to_cart_in_viewport = False
+            sticky_add_to_cart_visible = False
         elif page_kind == "search_results":
             selected_product_hint = {}
             available_options = []
             add_to_cart_visible = False
+            add_to_cart_available = False
+            add_to_cart_in_viewport = False
+            sticky_add_to_cart_visible = False
 
         return BrowserObservation(
             step_index=step_index,
@@ -414,9 +427,17 @@ class PlaywrightCoupangCartPage:
             selected_product_hint=selected_product_hint,
             available_options=available_options,
             add_to_cart_visible=add_to_cart_visible,
+            add_to_cart_available=add_to_cart_available,
+            add_to_cart_in_viewport=add_to_cart_in_viewport,
+            sticky_add_to_cart_visible=sticky_add_to_cart_visible,
+            expandable_sections=[str(item) for item in snapshot.get("expandable_sections", [])[:8]],
+            purchase_blocked_reason=(
+                None if not snapshot.get("purchase_blocked_reason") else str(snapshot.get("purchase_blocked_reason"))
+            ),
             blocker_hint=blocker_hint,
             cart_count=self._try_extract_cart_count(page),
             last_action_summary=last_action_summary,
+            observation_engine=str(snapshot.get("observation_engine") or "playwright"),
         )
 
     def execute_action(self, action: BrowserAgentAction) -> str:
@@ -448,6 +469,16 @@ class PlaywrightCoupangCartPage:
             self._click_add_to_cart_button(button)
             page.wait_for_timeout(1500)
             return "Clicked add-to-cart button."
+        if action.action_type == BrowserAgentActionType.SCROLL:
+            viewport = page.viewport_size or {"height": 900}
+            scroll_amount = int(action.scroll_amount or viewport.get("height", 900))
+            page.mouse.wheel(0, scroll_amount)
+            page.wait_for_timeout(1200)
+            return f"Scrolled by {scroll_amount} pixels."
+        if action.action_type == BrowserAgentActionType.GO_BACK:
+            page.go_back(wait_until="domcontentloaded")
+            page.wait_for_timeout(1500)
+            return "Navigated back for recovery."
         if action.action_type == BrowserAgentActionType.WAIT:
             wait_seconds = max(0.1, action.wait_seconds or 1.0)
             page.wait_for_timeout(int(wait_seconds * 1000))
@@ -481,6 +512,9 @@ class PlaywrightCoupangCartPage:
 
     def _find_add_to_cart_button(self, *, optional: bool) -> object:
         page = self._page_object()
+        hint_locator = self._locator_from_hint(self._last_action_hints.get("add_to_cart"))
+        if hint_locator is not None:
+            return hint_locator
         button = self._first_locator(
             (
                 lambda: page.get_by_role("button", name="장바구니 담기", exact=False),
@@ -555,6 +589,23 @@ class PlaywrightCoupangCartPage:
         target_href: str | None,
     ):
         page = self._page_object()
+        if target_href:
+            search_result_links = self._last_action_hints.get("search_result_links") or {}
+            if isinstance(search_result_links, dict):
+                hint_locator = self._locator_from_hint(search_result_links.get(target_href))
+                if hint_locator is not None:
+                    return hint_locator
+        if target_text:
+            option_targets = self._last_action_hints.get("option_targets") or {}
+            if isinstance(option_targets, dict):
+                hint_locator = self._locator_from_hint(option_targets.get(target_text))
+                if hint_locator is not None:
+                    return hint_locator
+            expandable_targets = self._last_action_hints.get("expandable_targets") or {}
+            if isinstance(expandable_targets, dict):
+                hint_locator = self._locator_from_hint(expandable_targets.get(target_text))
+                if hint_locator is not None:
+                    return hint_locator
         factories: list[Callable[[], object]] = []
         if target_href:
             for href_fragment in self._href_match_fragments(target_href):
@@ -588,10 +639,10 @@ class PlaywrightCoupangCartPage:
 
     def _extract_browser_snapshot(self, page: Page) -> dict[str, object]:
         try:
-            payload = page.evaluate(
+            viewport_state = page.evaluate(
                 """
                 () => {
-                  const visible = (element) => {
+                  const isVisible = (element) => {
                     if (!element) return false;
                     const style = window.getComputedStyle(element);
                     const rect = element.getBoundingClientRect();
@@ -601,7 +652,7 @@ class PlaywrightCoupangCartPage:
                   const interactiveElements = Array.from(
                     document.querySelectorAll("button, a, input, select, option, [role='button'], [role='link'], [role='option'], [role='textbox'], label")
                   )
-                    .filter((element) => visible(element))
+                    .filter((element) => isVisible(element))
                     .slice(0, 25)
                     .map((element) => {
                       const role = normalize(element.getAttribute('role')) || element.tagName.toLowerCase();
@@ -609,133 +660,45 @@ class PlaywrightCoupangCartPage:
                       return `${role}:${text}`.slice(0, 160);
                     })
                     .filter(Boolean);
-                  const observedProducts = [];
-                  const seenHref = new Set();
-                  for (const anchor of Array.from(document.querySelectorAll("a[href*='/vp/products/']"))) {
-                    if (!visible(anchor)) continue;
-                    const href = anchor.href;
-                    if (!href || seenHref.has(href)) continue;
-                    const container = anchor.closest('li, article, section, div') || anchor;
-                    const text = normalize(anchor.innerText || anchor.textContent);
-                    const containerText = normalize(container.innerText || container.textContent);
-                    if (!text || text.length < 4) continue;
-                    const priceMatch = containerText.match(/([0-9][0-9,]{2,})\\s*원?/);
-                    const ratingMatch = containerText.match(/([0-5](?:\\.[0-9])?)/);
-                    const reviewMatch = containerText.match(/(?:리뷰|평점|후기)?\\s*\\(?([0-9][0-9,]*)\\)?/);
-                    observedProducts.push({
-                      name: text.slice(0, 160),
-                      href,
-                      price_text: priceMatch ? priceMatch[1] : null,
-                      rating_text: ratingMatch ? ratingMatch[1] : null,
-                      review_count_text: reviewMatch ? reviewMatch[1] : null,
-                      badges: Array.from(container.querySelectorAll('img[alt], [aria-label]'))
-                        .map((element) => normalize(element.getAttribute('alt') || element.getAttribute('aria-label')))
-                        .filter(Boolean)
-                        .slice(0, 4),
-                      sold_out: /품절|일시품절|재입고 알림/.test(containerText),
-                    });
-                    seenHref.add(href);
-                    if (observedProducts.length >= 8) break;
-                  }
-                  const currentUrl = window.location.href;
-                  const isProductPage = /\\/vp\\/products\\//.test(currentUrl);
-                  const isCartPage = /cartview\\.pang/i.test(currentUrl);
-                  const bodyText = normalize(document.body ? document.body.innerText : '');
-                  const heading = normalize((document.querySelector('h1') || {}).innerText || '');
-                  const priceMatch = bodyText.match(/([0-9][0-9,]{2,})\\s*원?/);
-                  const ratingMatch = bodyText.match(/([0-5](?:\\.[0-9])?)/);
-                  const reviewMatch = bodyText.match(/(?:리뷰|후기|평점)\\s*\\(?([0-9][0-9,]*)\\)?/);
-                  const optionSelectors = [
-                    "[class*='option'] button",
-                    "[class*='option'] label",
-                    "[class*='option'] [role='option']",
-                    "[class*='option'] option",
-                    "[class*='quantity'] button",
-                    "[class*='count'] button",
-                    "[class*='count'] label",
-                    "[class*='order'] button",
-                    "[class*='buy'] button",
-                    "select option",
-                  ];
-                  const optionCandidates = !isProductPage
-                    ? []
-                    : Array.from(document.querySelectorAll(optionSelectors.join(",")));
-                  const availableOptions = !isProductPage
-                    ? []
-                    : (optionCandidates.length ? optionCandidates : Array.from(
-                        document.querySelectorAll("button, option, [role='option'], label")
-                      ))
-                        .filter((element) => visible(element))
-                        .map((element) => normalize(element.innerText || element.textContent || element.getAttribute('aria-label')))
-                        .filter((text) => text && text.length <= 80)
-                        .filter((text) => !/장바구니|구매|검색|로그인|마이쿠팡/.test(text))
-                        .slice(0, 20);
-                  const documentText = normalize(document.documentElement ? document.documentElement.textContent : bodyText);
-                  const addToCartVisible = Array.from(
-                    document.querySelectorAll("button, [role='button']")
-                  ).some((element) => {
-                    if (!visible(element)) return false;
-                    const text = normalize(element.innerText || element.textContent || element.getAttribute('aria-label'));
-                    return /장바구니\\s*담기|카트에\\s*담기|담기/.test(text);
-                  }) || /장바구니\\s*담기/.test(bodyText) || (isProductPage && /장바구니\\s*담기/.test(documentText));
-                  const cartItems = !isCartPage
-                    ? []
-                    : Array.from(document.querySelectorAll("a[href*='/vp/products/']"))
-                        .filter((anchor) => visible(anchor))
-                        .map((anchor) => {
-                          const container = anchor.closest("[data-cart-item-id], li, article, section, div, tr") || anchor;
-                          const containerText = normalize(container.innerText || container.textContent);
-                          const quantityInput = container.querySelector("input[type='number'], input[name*='qty'], input[name*='quantity']");
-                          const quantitySelect = container.querySelector("select");
-                          const quantityTextMatch = containerText.match(/(?:수량|수량변경)[^0-9]{0,8}(\\d+)|(?<![0-9])(\\d+)\\s*개/);
-                          const quantityValue = quantityInput && quantityInput.value
-                            ? parseInt(quantityInput.value, 10)
-                            : quantitySelect && quantitySelect.value
-                              ? parseInt(quantitySelect.value, 10)
-                              : quantityTextMatch
-                                ? parseInt(quantityTextMatch[1] || quantityTextMatch[2], 10)
-                                : null;
-                          const lines = containerText.split(/\\n+/).map((line) => normalize(line)).filter(Boolean);
-                          const name = normalize(anchor.innerText || anchor.textContent);
-                          const supplemental = lines.filter((line) => line && line !== name);
-                          const priceMatch = containerText.match(/([0-9][0-9,]{2,})\\s*원?/);
-                          const packageLine = supplemental.find((line) => /\\d+\\s*(개|입|kg|g|ml|l|L|팩|봉)/.test(line)) || null;
-                          const optionLine = supplemental.find((line) => /옵션|색상|사이즈|용량/.test(line)) || null;
-                          return {
-                            name: name.slice(0, 160),
-                            quantity: Number.isFinite(quantityValue) ? quantityValue : null,
-                            quantity_text: quantityTextMatch ? quantityTextMatch[0] : null,
-                            option_summary: optionLine ? optionLine.slice(0, 160) : null,
-                            package_summary: packageLine ? packageLine.slice(0, 160) : null,
-                            price_text: priceMatch ? priceMatch[1] : null,
-                            badges: Array.from(container.querySelectorAll('img[alt], [aria-label]'))
-                              .map((element) => normalize(element.getAttribute('alt') || element.getAttribute('aria-label')))
-                              .filter(Boolean)
-                              .slice(0, 4),
-                          };
-                        })
-                        .filter((item) => item.name)
-                        .slice(0, 8);
+                  const cartCtas = Array.from(document.querySelectorAll("button, a, [role='button']"))
+                    .filter((element) => isVisible(element))
+                    .map((element) => {
+                      const text = normalize(element.innerText || element.textContent || element.getAttribute('aria-label'));
+                      if (!/장바구니\\s*담기|카트에\\s*담기|장바구니|카트/.test(text)) return null;
+                      const rect = element.getBoundingClientRect();
+                      const style = window.getComputedStyle(element);
+                      return {
+                        text,
+                        in_viewport: rect.bottom > 0 && rect.top < window.innerHeight,
+                        sticky: style.position === 'fixed' || style.position === 'sticky',
+                        disabled: !!element.disabled || element.getAttribute('aria-disabled') === 'true',
+                      };
+                    })
+                    .filter(Boolean)
+                    .slice(0, 6);
+                  const expandableSections = Array.from(document.querySelectorAll("button, a, [role='button']"))
+                    .filter((element) => isVisible(element))
+                    .map((element) => normalize(element.innerText || element.textContent || element.getAttribute('aria-label')))
+                    .filter((text) => ["더보기", "상품정보 더보기", "옵션 펼치기", "펼치기", "자세히 보기"].includes(text))
+                    .slice(0, 10);
                   return {
                     interactive_elements: interactiveElements,
-                    observed_products: observedProducts,
-                    cart_items: cartItems,
-                    selected_product_hint: isProductPage && heading ? {
-                      name: heading,
-                      href: currentUrl,
-                      price_text: priceMatch ? priceMatch[1] : null,
-                      rating_text: ratingMatch ? ratingMatch[1] : null,
-                      review_count_text: reviewMatch ? reviewMatch[1] : null,
-                      badges: [],
-                      sold_out: /품절|일시품절|재입고 알림/.test(bodyText),
-                    } : {},
-                    available_options: availableOptions,
-                    add_to_cart_visible: addToCartVisible,
+                    cart_ctas: cartCtas,
+                    expandable_sections: expandableSections,
                   };
                 }
                 """
             )
-            return payload if isinstance(payload, dict) else {}
+            if not isinstance(viewport_state, dict):
+                return {}
+            snapshot, hints = self._scrapling_adapter.extract(
+                url=page.url,
+                html=page.content(),
+                body_text=self._safe_inner_text(page),
+                viewport_state=viewport_state,
+            )
+            snapshot["action_hints"] = hints
+            return snapshot
         except Exception:
             return {}
 
@@ -981,6 +944,19 @@ class PlaywrightCoupangCartPage:
                 last_error = exc
         assert last_error is not None
         raise last_error
+
+    def _locator_from_hint(self, hint):
+        if not isinstance(hint, dict):
+            return None
+        page = self._page_object()
+        xpath_selector = str(hint.get("xpath") or "").strip()
+        css_selector = str(hint.get("css") or "").strip()
+        factories: list[Callable[[], object]] = []
+        if xpath_selector:
+            factories.append(lambda: page.locator(f"xpath={xpath_selector}"))
+        if css_selector:
+            factories.append(lambda: page.locator(css_selector))
+        return self._first_locator(tuple(factories))
 
     @staticmethod
     def _product_slug(url: str) -> str:
