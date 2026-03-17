@@ -79,6 +79,14 @@
     - Selected product: `오리온 미쯔블랙 시리얼, 360g, 1개`
     - Cart verification: `cart_count_before: 0`, `cart_count_after: 1`, `stage: verification`, `message: Item added to cart and verified.`
     - Telegram success notification was sent through the live workflow path after verification.
+  - Current-head live rerun after recovery-click fix:
+    - `COUPANG_BROWSER_LAUNCH_MODE=cdp_chrome COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Default' COUPANG_BROWSER_HEADLESS=false uv run python -m coupang_cart_agent cart-live-inspect-session`
+    - Result: `session_mode: attached_cdp_profile`, cart page attached successfully with the logged-in `Default` Chrome profile.
+    - `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=cdp_chrome COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Default' COUPANG_BROWSER_HEADLESS=false uv run python -m coupang_cart_agent integration-live-request '시리얼 1개 담아줘' --user-id 'telegram:8201584878' --chat-id '8201584878' --thread-id 'how31-live-cereal-rerun-current-head'`
+    - Result: `success: true`
+    - Selected product: `오리온 미쯔블랙 시리얼, 360g, 1개`
+    - Cart verification: `cart_count_before: 1`, `cart_count_after: 1`, `stage: verification`, `message: Item added to cart and verified.`
+    - Workflow persistence recorded `thread_id: how31-live-cereal-rerun-current-head`, `last_status: success`, and a successful workflow run at `2026-03-17T01:22:20.812709+00:00`.
 - Branch: `how-31-goal-driven-recovery-loop`
 - Current published head: see the most recent Linear handoff comment for the exact SHA
 - Push: `git push origin how-31-goal-driven-recovery-loop` -> success
