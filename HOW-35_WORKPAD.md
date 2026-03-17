@@ -73,4 +73,4 @@
 - Publish
   - Push: `git push -u origin wowogur12/how-35-agent-ux-conversational-shopping-proposals` -> success
   - PR: `https://github.com/choijhyeok/coupang_agent/pull/20`
-  - Latest published HEAD SHA: `51f0312ae4634f0c8c28e6c4d56e73272a1a34a5`
+  - Latest published HEAD SHA is tracked in the Linear `## Codex Workpad` comment.
