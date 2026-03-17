@@ -476,6 +476,31 @@ class FoundationTests(unittest.TestCase):
         self.assertEqual(observation.page_kind, "session_blocked")
         self.assertIn("logged-in Coupang session", observation.blocker_hint or "")
 
+    def test_assert_no_session_blockers_tolerates_transient_title_failure(self) -> None:
+        class FakeBodyLocator:
+            def inner_text(self, timeout: int | None = None) -> str:
+                return "장바구니에 담은 상품이 없습니다."
+
+        class FakePage:
+            url = "https://cart.coupang.com/cartView.pang"
+
+            def title(self) -> str:
+                raise RuntimeError("Execution context was destroyed")
+
+            def locator(self, selector: str):
+                return FakeBodyLocator()
+
+        page = ExistingChromeCdpCoupangCartPage(
+            settings=PlaywrightCoupangSettings(
+                login_url="https://login.coupang.com",
+                cart_url="https://cart.coupang.com/cartView.pang",
+            ),
+            remote_debugging_port=9223,
+        )
+
+        with patch.object(ExistingChromeCdpCoupangCartPage, "_page_object", return_value=FakePage()):
+            page._assert_no_session_blockers()
+
     def test_perform_search_falls_back_to_direct_search_url_when_input_is_missing(self) -> None:
         class FakeMissingLocator:
             @property
