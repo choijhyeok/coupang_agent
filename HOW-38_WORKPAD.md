@@ -41,6 +41,7 @@
 - Notes / Blockers
   - Publish status: branch pushed to `origin/codex/how-38-live-browser-proposals`, existing PR detected at `https://github.com/choijhyeok/coupang_agent/pull/21`.
   - PR review sweep on March 18 found no GitHub review comments, review summaries, or top-level PR comments pending on PR `#21`.
+  - Reviewer handoff note posted to PR `#21`: `https://github.com/choijhyeok/coupang_agent/pull/21#issuecomment-4079212555`
   - Linear issue state moved from `Rework` to `Human Review` on March 18 after live Telegram end-to-end evidence and the stale success-notification fix were published.
   - Current remaining action is external only: PR `#21` is open, non-draft, and `mergeStateStatus=CLEAN`; workspace-side coding and validation for HOW-38 are complete and the issue is waiting on human review / merge.
   - Latest published commit SHA is reported in the final handoff because updating this workpad changes `HEAD`; the published branch and PR are the authoritative references in-repo.
