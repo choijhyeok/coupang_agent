@@ -38,7 +38,7 @@
 - Notes / Blockers
   - Publish status: branch pushed to `origin/codex/how-38-live-browser-proposals`, existing PR detected at `https://github.com/choijhyeok/coupang_agent/pull/21`.
   - PR review sweep on March 18 found no GitHub review comments, review summaries, or top-level PR comments pending on PR `#21`.
-  - Commit: `6a3c84403cfd1621626b7f2ed15e23aaa7d6c3e0`
+  - Commit: `71d9e13ed72ad704ca0d97e745db9c49e7ba2941`
   - Linear workpad comment created on HOW-38: comment id `7d3f8eed-0b23-48a5-a965-d5ef94f1ccf8`.
   - Focused automated validation was rerun on March 18 after resuming this workspace:
     - `uv run python -m unittest tests.test_live_workflow`
