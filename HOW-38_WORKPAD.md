@@ -12,6 +12,7 @@
   - [completed] Persist proposal/candidate source metadata so live vs debug evidence is distinguishable across proposal, rerank, and confirmation.
   - [completed] Update targeted tests for workflow, candidate discovery, and CLI-adjacent behavior.
   - [completed] Tighten README language so fixture/search-endpoint paths are clearly debug-only.
+  - [completed] Capture fixture-free live validation evidence and mirror the workpad into Linear.
 
 - Acceptance Criteria Checklist
   - [x] `integration-live-*` no longer requires `--fixture-path` or `COUPANG_SEARCH_ENDPOINT` for default proposal generation.
@@ -26,12 +27,27 @@
   - [x] `uv run python -m unittest tests.test_telegram_worker`
   - [x] `uv run python -m unittest tests.test_foundation`
   - [x] `uv run python -m compileall coupang_cart_agent tests/test_live_workflow.py`
+  - [x] `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=browser_use COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Default' COUPANG_BROWSER_HEADLESS=false uv run python -m coupang_cart_agent cart-live-inspect-session`
+  - [x] `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=browser_use COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Default' COUPANG_BROWSER_HEADLESS=false uv run python -m coupang_cart_agent integration-live-request '양파 담아줘' --user-id 'telegram:8201584878' --chat-id '8201584878' --thread-id 'how38-live-onion-20260318-a'`
+  - [x] `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=browser_use COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Default' COUPANG_BROWSER_HEADLESS=false uv run python -m coupang_cart_agent integration-live-request '다른 거 보여줘' --user-id 'telegram:8201584878' --chat-id '8201584878' --thread-id 'how38-live-onion-20260318-a'`
+  - [x] `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=browser_use COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Default' COUPANG_BROWSER_HEADLESS=false uv run python -m coupang_cart_agent integration-live-request 'ㅇㅇ 담아줘' --user-id 'telegram:8201584878' --chat-id '8201584878' --thread-id 'how38-live-onion-20260318-a'`
+  - [x] `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=browser_use COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Default' COUPANG_BROWSER_HEADLESS=false uv run python -m coupang_cart_agent integration-live-request '시리얼 1개 담아줘' --user-id 'telegram:8201584878' --chat-id '8201584878' --thread-id 'how38-live-cereal-20260318-a'`
+  - [x] `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=browser_use COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Default' COUPANG_BROWSER_HEADLESS=false uv run python -m coupang_cart_agent integration-live-request 'ㅇㅇ 담아줘' --user-id 'telegram:8201584878' --chat-id '8201584878' --thread-id 'how38-live-cereal-20260318-a'`
+  - [ ] `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=browser_use COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Default' COUPANG_BROWSER_HEADLESS=false uv run python -m coupang_cart_agent integration-live-telegram-once --timeout 2 --intake-db-path .artifacts/how38_telegram_intake.sqlite3 --skip-error-response`
 
 - Notes / Blockers
-  - Live external validation evidence is not yet captured in this turn, so the issue is not complete against the full Linear acceptance criteria.
-  - Need to check whether a Linear workpad comment can be updated through the available auth surface; initial GraphQL issue lookup returned HTTP 400.
   - Publish status: branch pushed to `origin/codex/how-38-live-browser-proposals`, existing PR detected at `https://github.com/choijhyeok/coupang_agent/pull/21`.
-  - Commit: `a30365f2a127df9897d7ce48942b2258886d5aa8`
+  - Commit: `6a3c84403cfd1621626b7f2ed15e23aaa7d6c3e0`
+  - Linear workpad comment created on HOW-38: comment id `7d3f8eed-0b23-48a5-a965-d5ef94f1ccf8`.
+  - March 18 live validation restored the fixture-free default path:
+    - `cart-live-inspect-session` attached to the real Chrome profile and reached `https://cart.coupang.com/cartView.pang` with `page_kind=browse`; the session was logged in and not blocked by `로그인하기` or Access Denied.
+    - `integration-live-request '양파 담아줘'` produced a real proposal with `candidate_source_mode=live_browser` and live-discovered candidates including `5625813479`, `1395626422`, and `4876673058`; Telegram proposal delivery succeeded without `--fixture-path` or `COUPANG_SEARCH_ENDPOINT`.
+    - The first confirmation attempt on onion failed at `failed_stage=verification` because the cart remained empty. This is retained as regression evidence that the workflow no longer reports success on empty-cart or verification-mismatch outcomes.
+    - `integration-live-request '다른 거 보여줘'` stayed inside the same live candidate pool and advanced to candidate `1395626422` rather than reloading any fixture source.
+    - The second onion confirmation completed successfully against the reranked live candidate, with `cart_results[0].success=true`, `stage=verification`, and persisted thread status `completed`.
+    - A second distinct request, `integration-live-request '시리얼 1개 담아줘'`, also generated a fixture-free live proposal and then completed successfully on confirmation, increasing observed cart count from 1 to 2 and verifying `오리온 미쯔블랙 시리얼`.
+  - Remaining caution: the highest-ranked first onion candidate was not addable in practice on March 18, while the reranked onion candidate and cereal candidate verified correctly. This looks like product-specific candidate quality debt rather than a fixture/live-path regression.
+  - Remaining blocker for full validation closure: `integration-live-telegram-once` was exercised without `--fixture-path` against a fresh intake DB, but returned `No parseable Telegram requests were captured.` There was no pending real inbound Telegram update available for the bot at run time, so the missing evidence is blocked on external operator/user input rather than code.
 
 - Follow-up Issues Created
-  - None
+  - `HOW-39` `[Live Selection] Penalize non-addable live candidates before first proposal`
