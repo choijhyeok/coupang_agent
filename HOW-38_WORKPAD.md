@@ -30,6 +30,8 @@
 - Notes / Blockers
   - Live external validation evidence is not yet captured in this turn, so the issue is not complete against the full Linear acceptance criteria.
   - Need to check whether a Linear workpad comment can be updated through the available auth surface; initial GraphQL issue lookup returned HTTP 400.
+  - Publish status: branch pushed to `origin/codex/how-38-live-browser-proposals`, existing PR detected at `https://github.com/choijhyeok/coupang_agent/pull/21`.
+  - Commit: `a30365f2a127df9897d7ce48942b2258886d5aa8`
 
 - Follow-up Issues Created
   - None
