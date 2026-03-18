@@ -12,7 +12,11 @@ from pathlib import Path
 from langgraph.checkpoint.postgres import PostgresSaver
 
 from .azure_openai import AzureOpenAIPlanner
-from .candidate_sources import CapturedCoupangFixtureCandidateSource, DemoCandidateSource
+from .candidate_sources import (
+    CapturedCoupangFixtureCandidateSource,
+    DemoCandidateSource,
+    LiveBrowserDiscoveryCandidateSource,
+)
 from .cart_verification import AzureOpenAICartVerifier
 from .cart_adapters import (
     BrowserUseCoupangCartPage,
@@ -80,19 +84,14 @@ def _build_live_cart_verifier(config):
     )
 
 
-def _build_live_candidate_source(*, config, fixture_path: str | None):
+def _build_live_candidate_source(*, config, fixture_path: str | None, page):
     if fixture_path:
         return CapturedCoupangFixtureCandidateSource(fixture_path=fixture_path)
     if config.coupang_search_endpoint:
         from .candidate_sources import LiveCoupangSearchCandidateSource
 
         return LiveCoupangSearchCandidateSource(search_endpoint=config.coupang_search_endpoint)
-    def _fallback_only_candidate_source(request: ShoppingRequest):
-        raise RuntimeError(
-            "Fallback candidate source is unavailable. Configure COUPANG_SEARCH_ENDPOINT or pass --fixture-path."
-        )
-
-    return _fallback_only_candidate_source
+    return LiveBrowserDiscoveryCandidateSource(driver=page)
 
 
 def _build_synthetic_live_envelope(request: ShoppingRequest) -> ShoppingRequestEnvelope:
@@ -134,8 +133,8 @@ def _open_live_workflow(
 
     operational_store = PostgresOperationalStore(config.postgres_dsn)
     operational_store.setup()
-    candidate_source = _build_live_candidate_source(config=config, fixture_path=fixture_path)
     page = build_live_cart_page(config)
+    candidate_source = _build_live_candidate_source(config=config, fixture_path=fixture_path, page=page)
     cart_service = CoupangCartExecutor(
         page=page,
         credentials=None,
@@ -752,6 +751,7 @@ def main(argv: list[str] | None = None) -> int:
                 {
                     "mode": "live-request",
                     "thread_id": thread_id,
+                    "candidate_source_mode": persisted_state.get("candidate_source_mode"),
                     "result": result.as_dict(),
                     "persisted_state_keys": sorted(persisted_state.keys()),
                     "thread_context": operational_store.load_thread_context(thread_id=thread_id),
@@ -814,6 +814,7 @@ def main(argv: list[str] | None = None) -> int:
             json.dumps(
                 {
                     "mode": "live-telegram-once",
+                    "candidate_source_mode": persisted_state.get("candidate_source_mode"),
                     "intake": first_parsed.as_dict(),
                     "result": result.as_dict(),
                     "persisted_state_keys": sorted(persisted_state.keys()),

@@ -54,7 +54,7 @@ Production-shaped integration. Uses:
 - LangGraph workflow checkpoints in PostgreSQL
 - Azure OpenAI planning node plus constrained browser-action decisions
 - observation-driven browser agent for search -> result selection -> option handling -> add-to-cart
-- candidate-source fallback only for preflight/debugging
+- live browser candidate discovery by default; fixture/search-endpoint sources only for debug
 - real Coupang cart automation on an attached logged-in Chrome session
 - real Telegram notifications
 
@@ -111,11 +111,13 @@ Required for the live workflow:
 - `AZURE_OPENAI_DEPLOYMENT`
 - `POSTGRES_DSN`
 
-Optional fallback-only preflight input:
+Optional debug-only input:
 
 - `COUPANG_SEARCH_ENDPOINT`
 
-If you want to force the old candidate-source fallback for operator preflight or debugging, you can pass `--fixture-path` to the live commands:
+The default `integration-live-*` path now discovers proposal candidates from the attached live Coupang browser session. `COUPANG_SEARCH_ENDPOINT` and `--fixture-path` are no longer part of the success path; use them only to debug extraction or compare against captured data.
+
+If you want to force a debug candidate source, pass `--fixture-path` explicitly:
 
 ```bash
 uv run python -m coupang_cart_agent integration-live-request \
@@ -123,7 +125,7 @@ uv run python -m coupang_cart_agent integration-live-request \
   --fixture-path tests/fixtures/coupang_search_onion_fixture.json
 ```
 
-That fallback path still uses LangGraph, PostgreSQL, Azure OpenAI, Coupang cart automation, and Telegram notifications, but the primary live path no longer depends on a prepared product URL, product ID, or candidate fixture.
+That debug path still uses LangGraph, PostgreSQL, Azure OpenAI, Coupang cart automation, and Telegram notifications, but it is not live-completion evidence. The primary live path no longer depends on a prepared product URL, product ID, `COUPANG_SEARCH_ENDPOINT`, or candidate fixture.
 
 Validated live browser path on March 11, 2026:
 
@@ -329,4 +331,4 @@ Recorded live validation evidence:
 - `cart-live-add` remains useful for isolated Coupang selector debugging.
 - `integration-demo` and `/smoke/demo` are safe local validation paths.
 - `integration-live-*` commands are the production-shaped integration paths.
-- `--fixture-path` and `COUPANG_SEARCH_ENDPOINT` are fallback/debug inputs, not the primary live search path anymore.
+- `--fixture-path` and `COUPANG_SEARCH_ENDPOINT` are debug-only candidate inputs. When they are used, treat the run as debug evidence rather than live-completion evidence.

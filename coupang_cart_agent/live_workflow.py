@@ -55,6 +55,7 @@ class LiveWorkflowState(TypedDict, total=False):
     selection_context: dict[str, object]
     agent_plan: dict[str, object]
     candidates_by_item: dict[str, list[dict[str, object]]]
+    candidate_source_mode: str
     selections: list[dict[str, object]]
     cart_results: list[dict[str, object]]
     conversation_status: str
@@ -379,6 +380,7 @@ class CoupangCartAgentLiveWorkflow:
             "selection_context": _selection_context_to_dict(selection_context),
             "thread_context": thread_context,
             "pending_proposal": pending_proposal,
+            "candidate_source_mode": str(pending_proposal.get("candidate_source_mode") or state.get("candidate_source_mode") or ""),
             "user_decision": user_decision,
             "conversation_status": conversation_status,
             "success": conversation_status in {"proposal_pending", "cancelled"},
@@ -481,12 +483,23 @@ class CoupangCartAgentLiveWorkflow:
         request = _shopping_request_from_dict(state["request"])
         started = time.perf_counter()
         try:
-            candidates = self._candidate_source(request)
+            planned_queries = {
+                query.item_name: query.query
+                for query in _agent_plan_from_dict(state["agent_plan"]).search_queries
+            } if state.get("agent_plan") else {}
+            if hasattr(self._candidate_source, "load_candidates"):
+                candidates = self._candidate_source.load_candidates(
+                    request,
+                    search_queries_by_item=planned_queries,
+                )
+            else:
+                candidates = self._candidate_source(request)
             return {
                 "candidates_by_item": {
                     item_name: [asdict(candidate) for candidate in values]
                     for item_name, values in candidates.items()
                 },
+                "candidate_source_mode": str(getattr(self._candidate_source, "source_mode", "unknown")),
                 "performance": _updated_workflow_performance(
                     state.get("performance"),
                     stage="load_candidates",
@@ -547,6 +560,7 @@ class CoupangCartAgentLiveWorkflow:
             proposal = _build_pending_proposal(
                 request=request,
                 selection_context=selection_context,
+                candidate_source_mode=str(state.get("candidate_source_mode") or "unknown"),
                 candidates_by_item={
                     item_name: [_product_candidate_from_dict(candidate) for candidate in values]
                     for item_name, values in state.get("candidates_by_item", {}).items()
@@ -788,6 +802,7 @@ def _build_pending_proposal(
     *,
     request: ShoppingRequest,
     selection_context: SelectionContext,
+    candidate_source_mode: str,
     candidates_by_item: dict[str, list[ProductCandidate]],
 ) -> dict[str, object]:
     if not request.items:
@@ -812,6 +827,7 @@ def _build_pending_proposal(
         ranked_candidates.append(
             _proposal_candidate_to_dict(
                 candidate=candidate,
+                candidate_source_mode=candidate_source_mode,
                 requested_item_name=requested_item.name,
                 quantity=requested_item.quantity,
                 score=score,
@@ -829,6 +845,7 @@ def _build_pending_proposal(
     return {
         "request_id": request.request_id,
         "request_item_name": requested_item.name,
+        "candidate_source_mode": candidate_source_mode,
         "candidate_index": 0,
         "selected_candidate": selected_candidate,
         "candidates": ranked_candidates,
@@ -840,6 +857,7 @@ def _build_pending_proposal(
 def _proposal_candidate_to_dict(
     *,
     candidate: ProductCandidate,
+    candidate_source_mode: str,
     requested_item_name: str,
     quantity: int,
     score: float,
@@ -848,6 +866,7 @@ def _proposal_candidate_to_dict(
 ) -> dict[str, object]:
     option_summary = _extract_option_summary(candidate.name, requested_item_name=requested_item_name)
     return {
+        "candidate_source_mode": candidate_source_mode,
         "request_item_name": requested_item_name,
         "product_id": candidate.product_id,
         "name": candidate.name,
