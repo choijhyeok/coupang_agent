@@ -162,11 +162,10 @@ def build_success_notification_payload(
     if not cart_results:
         raise ValueError("cart_results must not be empty")
 
-    products = (
-        normalize_snapshot_items(cart_snapshot_items)
-        if cart_snapshot_items
-        else [serialize_cart_result(result) for result in cart_results]
-    )
+    # Report the items that were just verified by this run. Persisted cart snapshots can
+    # legitimately include older items that predate the current request and would produce
+    # wrong-item completion messages if they override the fresh cart_results payload.
+    products = [serialize_cart_result(result) for result in cart_results]
     summary = summarize_cart_results(cart_results, cart_snapshot_items=products)
     return NotificationPayload(
         chat_id=chat_id,

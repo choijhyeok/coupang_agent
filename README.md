@@ -54,7 +54,7 @@ Production-shaped integration. Uses:
 - LangGraph workflow checkpoints in PostgreSQL
 - Azure OpenAI planning node plus constrained browser-action decisions
 - observation-driven browser agent for search -> result selection -> option handling -> add-to-cart
-- candidate-source fallback only for preflight/debugging
+- live browser candidate discovery by default; fixture/search-endpoint sources only for debug
 - real Coupang cart automation on an attached logged-in Chrome session
 - real Telegram notifications
 
@@ -111,11 +111,13 @@ Required for the live workflow:
 - `AZURE_OPENAI_DEPLOYMENT`
 - `POSTGRES_DSN`
 
-Optional fallback-only preflight input:
+Optional debug-only input:
 
 - `COUPANG_SEARCH_ENDPOINT`
 
-If you want to force the old candidate-source fallback for operator preflight or debugging, you can pass `--fixture-path` to the live commands:
+The default `integration-live-*` path now discovers proposal candidates from the attached live Coupang browser session. `COUPANG_SEARCH_ENDPOINT` and `--fixture-path` are no longer part of the success path; use them only to debug extraction or compare against captured data.
+
+If you want to force a debug candidate source, pass `--fixture-path` explicitly:
 
 ```bash
 uv run python -m coupang_cart_agent integration-live-request \
@@ -123,7 +125,7 @@ uv run python -m coupang_cart_agent integration-live-request \
   --fixture-path tests/fixtures/coupang_search_onion_fixture.json
 ```
 
-That fallback path still uses LangGraph, PostgreSQL, Azure OpenAI, Coupang cart automation, and Telegram notifications, but the primary live path no longer depends on a prepared product URL, product ID, or candidate fixture.
+That debug path still uses LangGraph, PostgreSQL, Azure OpenAI, Coupang cart automation, and Telegram notifications, but it is not live-completion evidence. The primary live path no longer depends on a prepared product URL, product ID, `COUPANG_SEARCH_ENDPOINT`, or candidate fixture.
 
 Validated live browser path on March 11, 2026:
 
@@ -309,10 +311,26 @@ Recorded live validation evidence:
   `POSTGRES_DSN=postgresql://postgres:postgres@localhost:5432/coupang_cart_agent COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Profile 1' uv run python -m coupang_cart_agent integration-live-telegram-worker --timeout 1 --sleep-seconds 0 --max-cycles 1 --intake-db-path .artifacts/how22_telegram_intake.sqlite3 --fixture-path tests/fixtures/coupang_search_onion_fixture.json --skip-error-response`
 - Worker restart restored offset `286968897` from `.artifacts/how22_telegram_intake.sqlite3` and resumed with no duplicate processing on a second `integration-live-telegram-worker` run.
 - Telegram success notification payload recorded `총 1종, 2개, 17,960원 장바구니 담기 완료`.
-- March 16, 2026 live attach-mode browser-agent success:
-  `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=browser_use COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Default' uv run python -m coupang_cart_agent integration-live-request '한끼 양파 300g 1개 담아줘' --user-id telegram:8201584878 --chat-id 8201584878`
-- March 16, 2026 second live attach-mode success without fixed URL:
-  `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=browser_use COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Default' uv run python -m coupang_cart_agent integration-live-request '생수 2L 1개 담아줘' --user-id telegram:8201584878 --chat-id 8201584878`
+- March 18, 2026 login/session preflight succeeded with:
+  `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=browser_use COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Default' COUPANG_BROWSER_HEADLESS=false uv run python -m coupang_cart_agent cart-live-inspect-session`
+  The attached session opened `https://cart.coupang.com/cartView.pang`, classified the page as `browse`, and did not report `로그인하기` or Access Denied.
+- March 18, 2026 fixture-free live proposal and rerank path:
+  `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=browser_use COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Default' COUPANG_BROWSER_HEADLESS=false uv run python -m coupang_cart_agent integration-live-request '양파 담아줘' --user-id telegram:8201584878 --chat-id 8201584878 --thread-id how38-live-onion-20260318-a`
+  The run generated a Telegram proposal from `candidate_source_mode=live_browser` with live-discovered candidates and no `--fixture-path`, fixed product URL, manual product ID, or `COUPANG_SEARCH_ENDPOINT`.
+- March 18, 2026 verification guard regression evidence:
+  `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=browser_use COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Default' COUPANG_BROWSER_HEADLESS=false uv run python -m coupang_cart_agent integration-live-request 'ㅇㅇ 담아줘' --user-id telegram:8201584878 --chat-id 8201584878 --thread-id how38-live-onion-20260318-a`
+  The first onion confirmation stopped at `failed_stage=verification` because the cart stayed empty. The workflow did not report false success.
+- March 18, 2026 live rerank without fixture re-injection:
+  `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=browser_use COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Default' COUPANG_BROWSER_HEADLESS=false uv run python -m coupang_cart_agent integration-live-request '다른 거 보여줘' --user-id telegram:8201584878 --chat-id 8201584878 --thread-id how38-live-onion-20260318-a`
+  The workflow stayed on the same live-discovered candidate set and advanced to the next candidate instead of reloading a fixture source.
+- March 18, 2026 end-to-end success after rerank:
+  `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=browser_use COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Default' COUPANG_BROWSER_HEADLESS=false uv run python -m coupang_cart_agent integration-live-request 'ㅇㅇ 담아줘' --user-id telegram:8201584878 --chat-id 8201584878 --thread-id how38-live-onion-20260318-a`
+  The reranked onion candidate completed `add-to-cart -> verification -> Telegram completion` and the persisted thread status moved to `completed`.
+- March 18, 2026 second distinct fixture-free end-to-end success:
+  `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=browser_use COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Default' COUPANG_BROWSER_HEADLESS=false uv run python -m coupang_cart_agent integration-live-request '시리얼 1개 담아줘' --user-id telegram:8201584878 --chat-id 8201584878 --thread-id how38-live-cereal-20260318-a`
+  Followed by:
+  `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=browser_use COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Default' COUPANG_BROWSER_HEADLESS=false uv run python -m coupang_cart_agent integration-live-request 'ㅇㅇ 담아줘' --user-id telegram:8201584878 --chat-id 8201584878 --thread-id how38-live-cereal-20260318-a`
+  This request completed without fixtures and verification observed the cart count increase from 1 to 2 for `오리온 미쯔블랙 시리얼`.
 - March 16, 2026 structured attach/session failure evidence:
   `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=existing_cdp COUPANG_CHROME_REMOTE_DEBUGGING_PORT=9226 uv run python -m coupang_cart_agent integration-live-request '양파 1개 담아줘' --user-id telegram:8201584878 --chat-id 8201584878`
 - Remaining live-quality debt is narrowed to follow-up issues, not core-path completion:
@@ -329,4 +347,4 @@ Recorded live validation evidence:
 - `cart-live-add` remains useful for isolated Coupang selector debugging.
 - `integration-demo` and `/smoke/demo` are safe local validation paths.
 - `integration-live-*` commands are the production-shaped integration paths.
-- `--fixture-path` and `COUPANG_SEARCH_ENDPOINT` are fallback/debug inputs, not the primary live search path anymore.
+- `--fixture-path` and `COUPANG_SEARCH_ENDPOINT` are debug-only candidate inputs. When they are used, treat the run as debug evidence rather than live-completion evidence.

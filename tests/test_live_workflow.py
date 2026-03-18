@@ -6,7 +6,10 @@ from datetime import UTC, datetime
 from langgraph.checkpoint.memory import InMemorySaver
 
 from coupang_cart_agent.azure_openai import AzureOpenAIPlanner
+from coupang_cart_agent.candidate_sources import LiveBrowserDiscoveryCandidateSource
 from coupang_cart_agent.contracts import (
+    BrowserObservation,
+    ObservedProduct,
     CartAddFailureReason,
     CartAddResult,
     CartAddStage,
@@ -112,6 +115,52 @@ class FailingShoppingAgent:
         raise AssertionError("shopping agent should not run before confirmation")
 
 
+class BrowserDiscoveryDriver:
+    def __init__(self) -> None:
+        self.actions: list[str] = []
+        self.queries: list[str] = []
+
+    def attach_to_logged_in_session(self, credentials=None) -> str:
+        self.actions.append("attach")
+        return "attached_browser_use_profile"
+
+    def assert_logged_in(self) -> None:
+        self.actions.append("assert_logged_in")
+
+    def execute_action(self, action) -> str:
+        self.actions.append(action.action_type.value)
+        self.queries.append(action.query or "")
+        return f"searched:{action.query}"
+
+    def observe(self, *, step_index: int, last_action_summary: str | None = None) -> BrowserObservation:
+        return BrowserObservation(
+            step_index=step_index,
+            url="https://www.coupang.com/np/search?q=%EC%96%91%ED%8C%8C",
+            title="검색 결과",
+            page_kind="search_results",
+            body_text_excerpt="양파 추천",
+            observed_products=[
+                ObservedProduct(
+                    name="곰곰 국내산 양파 1kg",
+                    href="https://www.coupang.com/vp/products/ONION-1KG",
+                    price_text="4,980원",
+                    rating_text="4.8",
+                    review_count_text="12,345",
+                    badges=["Rocket"],
+                ),
+                ObservedProduct(
+                    name="곰곰 국내산 양파 3kg",
+                    href="https://www.coupang.com/vp/products/ONION-3KG",
+                    price_text="8,980원",
+                    rating_text="4.9",
+                    review_count_text="25,000",
+                    badges=["Rocket"],
+                ),
+            ],
+            interactive_elements=["searchbox:검색", "link:곰곰 국내산 양파 3kg"],
+        )
+
+
 class LiveWorkflowTests(unittest.TestCase):
     def build_envelope(self, *, request_id: str, text: str) -> ShoppingRequestEnvelope:
         request = ShoppingRequest(
@@ -214,6 +263,64 @@ class LiveWorkflowTests(unittest.TestCase):
         self.assertIn("notify", second_result.performance["timings_ms"])
         self.assertEqual(store.runs[0]["performance"]["counts"]["planner_call_count"], 1)
 
+    def test_live_workflow_persists_live_browser_candidate_source_mode(self) -> None:
+        recorder = DeliveryRecorder()
+        store = InMemoryOperationalStore()
+        workflow = CoupangCartAgentLiveWorkflow(
+            candidate_source=LiveBrowserDiscoveryCandidateSource(driver=BrowserDiscoveryDriver()),
+            cart_service=SuccessCartService(),
+            notification_service=RetryingNotificationService(sender=recorder, max_attempts=1),
+            operational_store=store,
+            agent_planner=AzureOpenAIPlanner(endpoint=None, api_key=None, deployment=None),
+            checkpointer=InMemorySaver(),
+        )
+
+        proposal_result = workflow.run_envelope(self.build_envelope(request_id="req-1", text="양파 담아줘"))
+        confirm_result = workflow.run_envelope(self.build_envelope(request_id="req-2", text="ㅇㅇ 담아줘"))
+
+        self.assertTrue(proposal_result.success)
+        self.assertTrue(confirm_result.success)
+        self.assertEqual(store.runs[0]["pending_proposal"]["candidate_source_mode"], "live_browser")
+        self.assertEqual(store.runs[0]["pending_proposal"]["selected_candidate"]["candidate_source_mode"], "live_browser")
+        self.assertEqual(
+            store.runs[1]["cart_results"][0]["selected_product"]["candidate"]["product_id"],
+            store.runs[0]["pending_proposal"]["selected_candidate"]["product_id"],
+        )
+        persisted_state = workflow.get_persisted_state(
+            thread_id="telegram-session:telegram-chat:telegram:test-user"
+        )
+        self.assertEqual(persisted_state["candidate_source_mode"], "live_browser")
+
+    def test_live_workflow_success_notification_uses_confirmed_selection_not_stale_snapshot(self) -> None:
+        recorder = DeliveryRecorder()
+        store = InMemoryOperationalStore()
+        store.current_cart_snapshot_by_user["telegram:test-user"] = [
+            {
+                "product_id": "STALE-1",
+                "name": "오리온 미쯔블랙 시리얼, 360g, 1개",
+                "quantity": 1,
+                "price_krw": 4820,
+                "line_total_krw": 4820,
+                "snapshot_at": "2026-03-18T00:00:00+00:00",
+            }
+        ]
+        workflow = CoupangCartAgentLiveWorkflow(
+            candidate_source=LiveBrowserDiscoveryCandidateSource(driver=BrowserDiscoveryDriver()),
+            cart_service=SuccessCartService(),
+            notification_service=RetryingNotificationService(sender=recorder, max_attempts=1),
+            operational_store=store,
+            agent_planner=AzureOpenAIPlanner(endpoint=None, api_key=None, deployment=None),
+            checkpointer=InMemorySaver(),
+        )
+
+        workflow.run_envelope(self.build_envelope(request_id="req-1", text="양파 담아줘"))
+        result = workflow.run_envelope(self.build_envelope(request_id="req-2", text="ㅇㅇ 담아줘"))
+
+        self.assertTrue(result.success)
+        self.assertIn("장바구니 담기를 완료했습니다.", recorder.messages[-1][1])
+        self.assertIn("곰곰 국내산 양파", recorder.messages[-1][1])
+        self.assertNotIn("오리온 미쯔블랙 시리얼", recorder.messages[-1][1])
+
     def test_live_workflow_shows_next_candidate_without_cart_mutation(self) -> None:
         recorder = DeliveryRecorder()
         store = InMemoryOperationalStore()
@@ -235,6 +342,20 @@ class LiveWorkflowTests(unittest.TestCase):
         self.assertEqual(store.current_cart_snapshot_by_user, {})
         self.assertEqual(len(recorder.photos), 2)
         self.assertIn("추천 상품을 찾았습니다.", recorder.messages[-1][1])
+
+    def test_live_browser_candidate_source_discovers_candidates_without_fixture(self) -> None:
+        source = LiveBrowserDiscoveryCandidateSource(driver=BrowserDiscoveryDriver())
+        request = self.build_envelope(request_id="req-source", text="양파 1개 담아줘").request
+
+        candidates = source.load_candidates(
+            request,
+            search_queries_by_item={"양파": "양파"},
+        )
+
+        self.assertEqual(list(candidates.keys()), ["양파"])
+        self.assertGreaterEqual(len(candidates["양파"]), 2)
+        self.assertEqual(candidates["양파"][0].product_id, "ONION-3KG")
+        self.assertEqual(source.source_mode, "live_browser")
 
     def test_live_workflow_reports_cart_failure_and_preserves_pending_proposal(self) -> None:
         recorder = DeliveryRecorder()

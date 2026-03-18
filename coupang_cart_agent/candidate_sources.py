@@ -8,7 +8,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from .contracts import ProductCandidate, RequestedItem, ShoppingRequest, build_requested_item_search_query
+from .contracts import (
+    BrowserAgentAction,
+    BrowserAgentActionType,
+    BrowserObservation,
+    ObservedProduct,
+    ProductCandidate,
+    RequestedItem,
+    ShoppingRequest,
+    build_requested_item_search_query,
+)
 
 
 def _read_first(raw: Mapping[str, object], *keys: str, default: object = None) -> object:
@@ -139,6 +148,8 @@ def product_candidates_from_records(records: list[ProductCandidate | Mapping[str
 class DemoCandidateSource:
     """Deterministic candidate source for local demos."""
 
+    source_mode = "demo"
+
     def __call__(self, request: ShoppingRequest) -> dict[str, list[ProductCandidate]]:
         candidates_by_item: dict[str, list[ProductCandidate]] = {}
         for index, item in enumerate(request.items, start=1):
@@ -179,6 +190,7 @@ class CapturedCoupangFixtureCandidateSource:
     """Production-shaped source backed by captured collector output stored in the repo."""
 
     fixture_path: str
+    source_mode: str = "debug_fixture"
 
     def __call__(self, request: ShoppingRequest) -> dict[str, list[ProductCandidate]]:
         payload = json.loads(Path(self.fixture_path).read_text(encoding="utf-8"))
@@ -223,6 +235,7 @@ class LiveCoupangSearchCandidateSource:
 
     search_endpoint: str
     timeout_seconds: int = 15
+    source_mode: str = "debug_search_endpoint"
 
     def __call__(self, request: ShoppingRequest) -> dict[str, list[ProductCandidate]]:
         return {item.name: self.search(build_requested_item_search_query(item)) for item in request.items}
@@ -257,3 +270,136 @@ class LiveCoupangSearchCandidateSource:
     def _build_url(self, query: str) -> str:
         separator = "&" if "?" in self.search_endpoint else "?"
         return f"{self.search_endpoint}{separator}q={urllib.parse.quote(query)}"
+
+
+@dataclass(slots=True)
+class LiveBrowserDiscoveryCandidateSource:
+    """Primary live candidate source backed by the attached browser session."""
+
+    driver: Any
+    max_candidates_per_item: int = 5
+    source_mode: str = "live_browser"
+
+    def __call__(self, request: ShoppingRequest) -> dict[str, list[ProductCandidate]]:
+        return self.load_candidates(request, search_queries_by_item=None)
+
+    def load_candidates(
+        self,
+        request: ShoppingRequest,
+        *,
+        search_queries_by_item: Mapping[str, str] | None,
+    ) -> dict[str, list[ProductCandidate]]:
+        self.driver.attach_to_logged_in_session(None)
+        self.driver.assert_logged_in()
+        discovered: dict[str, list[ProductCandidate]] = {}
+        for index, item in enumerate(request.items, start=1):
+            query = str((search_queries_by_item or {}).get(item.name) or build_requested_item_search_query(item)).strip()
+            self.driver.execute_action(
+                BrowserAgentAction(
+                    action_type=BrowserAgentActionType.SEARCH,
+                    query=query,
+                    reasoning_summary="Discover live proposal candidates from the attached browser session.",
+                )
+            )
+            observation = self.driver.observe(
+                step_index=index,
+                last_action_summary=f"search:{query}",
+            )
+            candidates = _candidates_from_observation(
+                observation=observation,
+                fallback_query=query,
+                max_candidates=self.max_candidates_per_item,
+            )
+            if not candidates:
+                raise RuntimeError(
+                    f"live browser candidate discovery returned no usable products for {item.name!r}"
+                )
+            discovered[item.name] = [
+                ProductCandidate(
+                    product_id=candidate.product_id,
+                    name=candidate.name,
+                    price_krw=candidate.price_krw,
+                    rating=candidate.rating,
+                    review_count=candidate.review_count,
+                    product_url=candidate.product_url,
+                    image_url=candidate.image_url,
+                    vendor=candidate.vendor,
+                    badges=list(candidate.badges),
+                )
+                for candidate in candidates
+            ]
+        return discovered
+
+
+def _candidates_from_observation(
+    *,
+    observation: BrowserObservation,
+    fallback_query: str,
+    max_candidates: int,
+) -> list[ProductCandidate]:
+    ranked = sorted(
+        [product for product in observation.observed_products if product.name.strip() and not product.sold_out],
+        key=lambda product: (
+            _text_match_score(product, fallback_query),
+            _rating_from_text(product.rating_text),
+            _review_count_from_text(product.review_count_text),
+            -_price_from_text(product.price_text),
+        ),
+        reverse=True,
+    )
+    return [
+        ProductCandidate(
+            product_id=_product_id_from_href(product.href, fallback_name=product.name),
+            name=product.name.strip(),
+            price_krw=max(1, _price_from_text(product.price_text)),
+            rating=max(0.0, min(5.0, _rating_from_text(product.rating_text))),
+            review_count=max(0, _review_count_from_text(product.review_count_text)),
+            product_url=(product.href or observation.url or f"https://www.coupang.com/np/search?q={urllib.parse.quote(fallback_query)}"),
+            image_url=None,
+            vendor="Coupang",
+            badges=list(product.badges),
+        )
+        for product in ranked[:max(1, max_candidates)]
+    ]
+
+
+def _price_from_text(value: str | None) -> int:
+    if not value:
+        return 0
+    digits = "".join(character for character in value if character.isdigit())
+    return int(digits) if digits else 0
+
+
+def _rating_from_text(value: str | None) -> float:
+    if not value:
+        return 0.0
+    filtered = "".join(character for character in value if character.isdigit() or character == ".")
+    try:
+        return float(filtered) if filtered else 0.0
+    except ValueError:
+        return 0.0
+
+
+def _review_count_from_text(value: str | None) -> int:
+    if not value:
+        return 0
+    digits = "".join(character for character in value if character.isdigit())
+    return int(digits) if digits else 0
+
+
+def _product_id_from_href(href: str | None, *, fallback_name: str) -> str:
+    if href:
+        parsed = urllib.parse.urlparse(href)
+        parts = [segment for segment in parsed.path.split("/") if segment]
+        if "products" in parts:
+            index = parts.index("products")
+            if index + 1 < len(parts):
+                return parts[index + 1]
+    slug = "-".join(token for token in fallback_name.lower().split() if token)
+    return slug or "observed-product"
+
+
+def _text_match_score(product: ObservedProduct, query: str) -> int:
+    lowered_name = product.name.lower()
+    tokens = [token for token in urllib.parse.unquote(query).lower().split() if token]
+    return sum(10 if token in lowered_name else 0 for token in tokens)
