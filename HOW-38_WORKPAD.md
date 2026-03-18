@@ -47,7 +47,7 @@
     - The second onion confirmation completed successfully against the reranked live candidate, with `cart_results[0].success=true`, `stage=verification`, and persisted thread status `completed`.
     - A second distinct request, `integration-live-request '시리얼 1개 담아줘'`, also generated a fixture-free live proposal and then completed successfully on confirmation, increasing observed cart count from 1 to 2 and verifying `오리온 미쯔블랙 시리얼`.
   - Remaining caution: the highest-ranked first onion candidate was not addable in practice on March 18, while the reranked onion candidate and cereal candidate verified correctly. This looks like product-specific candidate quality debt rather than a fixture/live-path regression.
-  - Remaining blocker for full validation closure: `integration-live-telegram-once` was exercised without `--fixture-path` against a fresh intake DB, but returned `No parseable Telegram requests were captured.` There was no pending real inbound Telegram update available for the bot at run time, so the missing evidence is blocked on external operator/user input rather than code.
+  - Remaining blocker for full validation closure: `integration-live-telegram-once` was exercised without `--fixture-path` against a fresh intake DB, but returned `No parseable Telegram requests were captured.` A direct Telegram Bot API check with `getUpdates(timeout=1)` then returned `update_count=0`, so there were no pending real inbound Telegram updates available for the bot at run time. The missing evidence is blocked on external operator/user input rather than code.
 
 - Follow-up Issues Created
   - `HOW-39` `[Live Selection] Penalize non-addable live candidates before first proposal`
