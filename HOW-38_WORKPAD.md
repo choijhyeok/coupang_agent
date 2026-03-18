@@ -5,7 +5,7 @@
   - Repo: `/Users/jaehyeokchoi/code/coupang-cart-workspaces/HOW-38`
   - Branch: `codex/how-38-live-browser-proposals`
   - Issue: `HOW-38`
-  - Issue type: integration
+  - Issue type: review/rework
 
 - Plan
   - [completed] Remove fixture-first live default and restore live browser candidate discovery as the primary proposal source.
@@ -37,8 +37,15 @@
 
 - Notes / Blockers
   - Publish status: branch pushed to `origin/codex/how-38-live-browser-proposals`, existing PR detected at `https://github.com/choijhyeok/coupang_agent/pull/21`.
+  - PR review sweep on March 18 found no GitHub review comments, review summaries, or top-level PR comments pending on PR `#21`.
   - Commit: `6a3c84403cfd1621626b7f2ed15e23aaa7d6c3e0`
   - Linear workpad comment created on HOW-38: comment id `7d3f8eed-0b23-48a5-a965-d5ef94f1ccf8`.
+  - Focused automated validation was rerun on March 18 after resuming this workspace:
+    - `uv run python -m unittest tests.test_live_workflow`
+    - `uv run python -m unittest tests.test_live_browser_agent`
+    - `uv run python -m unittest tests.test_telegram_worker`
+    - `uv run python -m unittest tests.test_foundation`
+    - `uv run python -m compileall coupang_cart_agent tests/test_live_workflow.py`
   - March 18 live validation restored the fixture-free default path:
     - `cart-live-inspect-session` attached to the real Chrome profile and reached `https://cart.coupang.com/cartView.pang` with `page_kind=browse`; the session was logged in and not blocked by `로그인하기` or Access Denied.
     - `integration-live-request '양파 담아줘'` produced a real proposal with `candidate_source_mode=live_browser` and live-discovered candidates including `5625813479`, `1395626422`, and `4876673058`; Telegram proposal delivery succeeded without `--fixture-path` or `COUPANG_SEARCH_ENDPOINT`.
