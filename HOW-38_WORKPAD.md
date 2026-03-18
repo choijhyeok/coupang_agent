@@ -44,6 +44,7 @@
   - Reviewer handoff note posted to PR `#21`: `https://github.com/choijhyeok/coupang_agent/pull/21#issuecomment-4079212555`
   - Linear issue state moved from `Rework` to `Human Review` on March 18 after live Telegram end-to-end evidence and the stale success-notification fix were published.
   - Current remaining action is external only: PR `#21` is open, non-draft, and `mergeStateStatus=CLEAN`; workspace-side coding and validation for HOW-38 are complete and the issue is waiting on human review / merge.
+  - GitHub currently reports no required or pending status checks on PR `#21` (`statusCheckRollup=[]`), so there is no CI-side merge blocker at this point.
   - Latest published commit SHA is reported in the final handoff because updating this workpad changes `HEAD`; the published branch and PR are the authoritative references in-repo.
   - Linear workpad comment created on HOW-38: comment id `7d3f8eed-0b23-48a5-a965-d5ef94f1ccf8`.
   - Focused automated validation was rerun on March 18 after resuming this workspace:
