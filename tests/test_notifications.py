@@ -85,37 +85,30 @@ class NotificationTests(unittest.TestCase):
         self.assertIn("삼다수 2L x 6 / 6,900원 / 1개", message)
         self.assertIn("요약: 총 2종, 3개, 40,700원 장바구니 담기 완료", message)
 
-    def test_success_message_uses_db_snapshot_and_prior_purchase_context_when_provided(self) -> None:
+    def test_success_message_keeps_current_cart_results_when_snapshot_context_is_provided(self) -> None:
         payload = build_success_notification_payload(
             chat_id="telegram-chat",
             cart_results=[
                 cart_result(
                     product_id="CP-1",
-                    name="임시 상품명",
-                    price_krw=1000,
+                    name="방금 담은 양파 1kg",
+                    price_krw=2620,
                     quantity=1,
                 ),
             ],
             cart_snapshot_items=[
                 {
-                    "product_id": "CP-1",
-                    "name": "코카콜라 제로 355ml x 24",
-                    "quantity": 2,
-                    "price_krw": 16900,
-                    "line_total_krw": 33800,
-                },
-                {
-                    "product_id": "CP-2",
-                    "name": "삼다수 2L x 6",
+                    "product_id": "STALE-1",
+                    "name": "오리온 미쯔블랙 시리얼, 360g, 1개",
                     "quantity": 1,
-                    "price_krw": 6900,
-                    "line_total_krw": 6900,
+                    "price_krw": 4820,
+                    "line_total_krw": 4820,
                 },
             ],
             prior_purchases=[
                 PriorPurchaseRecord(
                     product_id="CP-1",
-                    product_name="코카콜라 제로 355ml x 24",
+                    product_name="방금 담은 양파 1kg",
                     purchase_count=3,
                 )
             ],
@@ -123,11 +116,11 @@ class NotificationTests(unittest.TestCase):
 
         message = format_notification_message(payload)
 
-        self.assertEqual(payload.details["cart_item_count"], 2)
-        self.assertIn("코카콜라 제로 355ml x 24 / 16,900원 / 2개", message)
-        self.assertIn("삼다수 2L x 6 / 6,900원 / 1개", message)
-        self.assertIn("재구매 참고: 코카콜라 제로 355ml x 24 / 이전 구매 3회", message)
-        self.assertIn("요약: 총 2종, 3개, 40,700원 장바구니 담기 완료", message)
+        self.assertEqual(payload.details["cart_item_count"], 1)
+        self.assertIn("방금 담은 양파 1kg / 2,620원 / 1개", message)
+        self.assertNotIn("오리온 미쯔블랙 시리얼", message)
+        self.assertIn("재구매 참고: 방금 담은 양파 1kg / 이전 구매 3회", message)
+        self.assertIn("요약: 총 1종, 1개, 2,620원 장바구니 담기 완료", message)
 
     def test_failure_payload_and_message_include_stage_reason_and_detail(self) -> None:
         payload = build_failure_notification_payload(

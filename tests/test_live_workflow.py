@@ -291,6 +291,36 @@ class LiveWorkflowTests(unittest.TestCase):
         )
         self.assertEqual(persisted_state["candidate_source_mode"], "live_browser")
 
+    def test_live_workflow_success_notification_uses_confirmed_selection_not_stale_snapshot(self) -> None:
+        recorder = DeliveryRecorder()
+        store = InMemoryOperationalStore()
+        store.current_cart_snapshot_by_user["telegram:test-user"] = [
+            {
+                "product_id": "STALE-1",
+                "name": "오리온 미쯔블랙 시리얼, 360g, 1개",
+                "quantity": 1,
+                "price_krw": 4820,
+                "line_total_krw": 4820,
+                "snapshot_at": "2026-03-18T00:00:00+00:00",
+            }
+        ]
+        workflow = CoupangCartAgentLiveWorkflow(
+            candidate_source=LiveBrowserDiscoveryCandidateSource(driver=BrowserDiscoveryDriver()),
+            cart_service=SuccessCartService(),
+            notification_service=RetryingNotificationService(sender=recorder, max_attempts=1),
+            operational_store=store,
+            agent_planner=AzureOpenAIPlanner(endpoint=None, api_key=None, deployment=None),
+            checkpointer=InMemorySaver(),
+        )
+
+        workflow.run_envelope(self.build_envelope(request_id="req-1", text="양파 담아줘"))
+        result = workflow.run_envelope(self.build_envelope(request_id="req-2", text="ㅇㅇ 담아줘"))
+
+        self.assertTrue(result.success)
+        self.assertIn("장바구니 담기를 완료했습니다.", recorder.messages[-1][1])
+        self.assertIn("곰곰 국내산 양파", recorder.messages[-1][1])
+        self.assertNotIn("오리온 미쯔블랙 시리얼", recorder.messages[-1][1])
+
     def test_live_workflow_shows_next_candidate_without_cart_mutation(self) -> None:
         recorder = DeliveryRecorder()
         store = InMemoryOperationalStore()
