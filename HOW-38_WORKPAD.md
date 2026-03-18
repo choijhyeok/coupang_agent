@@ -41,6 +41,7 @@
 - Notes / Blockers
   - Publish status: branch pushed to `origin/codex/how-38-live-browser-proposals`, existing PR detected at `https://github.com/choijhyeok/coupang_agent/pull/21`.
   - PR review sweep on March 18 found no GitHub review comments, review summaries, or top-level PR comments pending on PR `#21`.
+  - Linear issue state moved from `Rework` to `Human Review` on March 18 after live Telegram end-to-end evidence and the stale success-notification fix were published.
   - Latest published commit SHA is reported in the final handoff because updating this workpad changes `HEAD`; the published branch and PR are the authoritative references in-repo.
   - Linear workpad comment created on HOW-38: comment id `7d3f8eed-0b23-48a5-a965-d5ef94f1ccf8`.
   - Focused automated validation was rerun on March 18 after resuming this workspace:
