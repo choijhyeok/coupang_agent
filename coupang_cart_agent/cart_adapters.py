@@ -98,6 +98,11 @@ class DemoCoupangCartPage:
             ],
         )
 
+    def remove_from_cart(self, product_name: str) -> bool:
+        if self._should_fail:
+            return False
+        return True
+
     def observe(
         self,
         *,
@@ -247,6 +252,18 @@ class PlaywrightCoupangCartPage:
         page_text = page.locator("body").inner_text(timeout=5000)
         if any(token in page_text for token in sold_out_tokens):
             raise OutOfStockError("Selected product is sold out.")
+        purchase_restricted_tokens = (
+            "로켓프레시",
+            "와우회원만",
+            "와우 회원만",
+            "와우 멤버십으로 할인받기",
+            "장바구니에 담을 수 없",
+            "구매가 불가능",
+        )
+        if any(token in page_text for token in purchase_restricted_tokens) and not self._find_add_to_cart_button(optional=True):
+            raise UIElementNotFoundError(
+                "Add-to-cart button not found because this product appears purchase-restricted."
+            )
 
         if not self._find_add_to_cart_button(optional=True):
             raise UIElementNotFoundError("Add-to-cart button not found.")
@@ -363,6 +380,7 @@ class PlaywrightCoupangCartPage:
             ObservedProduct(
                 name=str(raw.get("name", "")).strip(),
                 href=(None if not raw.get("href") else str(raw.get("href"))),
+                image_url=(None if not raw.get("image_url") else str(raw.get("image_url"))),
                 price_text=(None if not raw.get("price_text") else str(raw.get("price_text"))),
                 rating_text=(None if not raw.get("rating_text") else str(raw.get("rating_text"))),
                 review_count_text=(
@@ -972,6 +990,98 @@ class PlaywrightCoupangCartPage:
     def _product_slug(url: str) -> str:
         trimmed = url.rstrip("/").split("/")[-1]
         return trimmed or "unknown-product"
+
+    def remove_from_cart(self, product_name: str) -> bool:
+        """Navigate to cart page, find item by name (partial match), and click delete."""
+        page = self._page_object()
+        page.goto(self._settings.cart_url, wait_until="domcontentloaded")
+        page.wait_for_timeout(2500)
+        self._assert_no_session_blockers(page)
+
+        # Strategy 1: iterate cart-item containers and partial-match product name
+        item_container_selectors = [
+            "[data-cart-item-id]",
+            "[class*='cart-item']",
+            "li[class*='product']",
+            "div[class*='product-item']",
+            "tr[class*='item']",
+        ]
+        normalized_query = product_name.strip().lower()
+        for container_selector in item_container_selectors:
+            containers = page.locator(container_selector)
+            count = containers.count()
+            if count == 0:
+                continue
+            for i in range(count):
+                container = containers.nth(i)
+                try:
+                    text = container.inner_text(timeout=3000).strip().lower()
+                except Exception:
+                    continue
+                if normalized_query not in text:
+                    continue
+                # Found the matching cart item — click its delete button
+                if self._click_delete_in_container(container, page):
+                    return True
+
+        # Strategy 2: find any element whose text contains the product name,
+        # walk up to a reasonable ancestor, then click its 삭제 link/button
+        try:
+            # Use a broad text search (partial match)
+            matching_elements = page.get_by_text(product_name, exact=False)
+            if matching_elements.count() > 0:
+                target = matching_elements.first
+                # Walk up to a cart-item ancestor
+                for ancestor_pattern in [
+                    "xpath=ancestor::*[@data-cart-item-id]",
+                    "xpath=ancestor::li[contains(@class,'product') or contains(@class,'item')]",
+                    "xpath=ancestor::div[contains(@class,'cart') or contains(@class,'item') or contains(@class,'product')]",
+                ]:
+                    try:
+                        ancestor = target.locator(ancestor_pattern).first
+                        ancestor.wait_for(timeout=2000)
+                        if self._click_delete_in_container(ancestor, page):
+                            return True
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+
+        # Strategy 3: find 삭제 links/buttons near the product name text on the page
+        try:
+            body_text = page.locator("body").inner_text(timeout=5000)
+            if normalized_query in body_text.lower():
+                # Product text exists on page — try clicking the nearest 삭제
+                delete_links = page.locator("a:has-text('삭제'), button:has-text('삭제')")
+                if delete_links.count() > 0:
+                    delete_links.first.click(timeout=3000)
+                    page.wait_for_timeout(1500)
+                    return True
+        except Exception:
+            pass
+
+        return False
+
+    def _click_delete_in_container(self, container, page) -> bool:
+        """Try clicking a delete button/link within a cart item container."""
+        delete_selectors = [
+            "a:has-text('삭제')",
+            "button:has-text('삭제')",
+            "a[class*='delete']",
+            "button[class*='delete']",
+            "[class*='delete']",
+            "input[type='button'][value='삭제']",
+        ]
+        for selector in delete_selectors:
+            try:
+                btn = container.locator(selector).first
+                btn.wait_for(timeout=2000)
+                btn.click(timeout=3000)
+                page.wait_for_timeout(1500)
+                return True
+            except Exception:
+                continue
+        return False
 
 
 class ChromeCdpCoupangCartPage(PlaywrightCoupangCartPage):

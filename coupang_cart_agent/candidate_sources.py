@@ -337,8 +337,13 @@ def _candidates_from_observation(
     fallback_query: str,
     max_candidates: int,
 ) -> list[ProductCandidate]:
+    visible_products = [
+        product for product in observation.observed_products if product.name.strip() and not product.sold_out
+    ]
+    unrestricted_products = [product for product in visible_products if not _is_purchase_restricted_product(product)]
+    pool = unrestricted_products or visible_products
     ranked = sorted(
-        [product for product in observation.observed_products if product.name.strip() and not product.sold_out],
+        pool,
         key=lambda product: (
             _text_match_score(product, fallback_query),
             _rating_from_text(product.rating_text),
@@ -355,12 +360,25 @@ def _candidates_from_observation(
             rating=max(0.0, min(5.0, _rating_from_text(product.rating_text))),
             review_count=max(0, _review_count_from_text(product.review_count_text)),
             product_url=(product.href or observation.url or f"https://www.coupang.com/np/search?q={urllib.parse.quote(fallback_query)}"),
-            image_url=None,
+            image_url=product.image_url,
             vendor="Coupang",
             badges=list(product.badges),
         )
         for product in ranked[:max(1, max_candidates)]
     ]
+
+
+def _is_purchase_restricted_product(product: ObservedProduct) -> bool:
+    text_fragments = [product.name, *(product.badges or [])]
+    combined = " ".join(fragment.lower() for fragment in text_fragments if fragment).strip()
+    restricted_tokens = (
+        "로켓프레시",
+        "rocket fresh",
+        "와우",
+        "wow",
+        "fresh",
+    )
+    return any(token in combined for token in restricted_tokens)
 
 
 def _price_from_text(value: str | None) -> int:

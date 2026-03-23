@@ -50,7 +50,12 @@ class WorkerCycleReport:
 
 
 class TelegramLiveWorker:
-    """Always-on Telegram polling worker with persisted cursor and pending-envelope replay."""
+    """Always-on Telegram polling worker with persisted cursor and pending-envelope replay.
+
+    When *price_monitor* is supplied the worker will run a price-check cycle
+    every *price_monitor_interval_seconds* between Telegram poll cycles,
+    eliminating the need for a separate price-monitor process.
+    """
 
     def __init__(
         self,
@@ -62,6 +67,8 @@ class TelegramLiveWorker:
         poll_timeout: int = 30,
         sleep_seconds: float = 1.0,
         send_error_response: bool = True,
+        price_monitor: object | None = None,
+        price_monitor_interval_seconds: float = 180.0,
         logger: Callable[[dict[str, object]], None] | None = None,
     ) -> None:
         self._worker_name = worker_name
@@ -71,6 +78,9 @@ class TelegramLiveWorker:
         self._poll_timeout = poll_timeout
         self._sleep_seconds = sleep_seconds
         self._send_error_response = send_error_response
+        self._price_monitor = price_monitor
+        self._price_monitor_interval = price_monitor_interval_seconds
+        self._last_price_check: float = 0.0
         self._logger = logger or self._default_logger
 
     def run(
@@ -89,9 +99,24 @@ class TelegramLiveWorker:
             next_offset = report.next_offset
             if max_cycles is not None and cycle >= max_cycles:
                 break
+            self._maybe_run_price_monitor(cycle=cycle)
             if self._sleep_seconds > 0:
                 time.sleep(self._sleep_seconds)
         return reports
+
+    def _maybe_run_price_monitor(self, *, cycle: int) -> None:
+        """Run a price-monitor cycle if the interval has elapsed."""
+        if self._price_monitor is None:
+            return
+        now = time.monotonic()
+        if now - self._last_price_check < self._price_monitor_interval:
+            return
+        self._last_price_check = now
+        try:
+            report = self._price_monitor.run_cycle(cycle=cycle)
+            self._logger({"type": "price-monitor-cycle", **report.as_dict()})
+        except Exception as exc:
+            self._logger({"type": "price-monitor-error", "error": str(exc)})
 
     def run_cycle(self, *, cycle: int, offset: int | None) -> WorkerCycleReport:
         cycle_started = time.perf_counter()

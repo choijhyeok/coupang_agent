@@ -11,7 +11,11 @@ from pathlib import Path
 
 from langgraph.checkpoint.postgres import PostgresSaver
 
-from .azure_openai import AzureOpenAIPlanner
+from .azure_openai import (
+    AzureOpenAIConversationInterpreter,
+    AzureOpenAIPlanner,
+    AzureOpenAIRequestParser,
+)
 from .candidate_sources import (
     CapturedCoupangFixtureCandidateSource,
     DemoCandidateSource,
@@ -28,7 +32,7 @@ from .cart_adapters import (
     PlaywrightCoupangCartPage,
     PlaywrightCoupangSettings,
 )
-from .cart_executor import CoupangCartExecutor, SessionCredentials
+from .cart_executor import CoupangCartExecutor, CoupangCartRemoveExecutor, SessionCredentials
 from .cart_persistence import SqliteCartResultStore
 from .config import ConfigError, load_config, load_telegram_bot_token
 from .contracts import (
@@ -61,10 +65,16 @@ from .telegram_persistence import TelegramIntakeRepository
 from .telegram_worker import TelegramLiveWorker
 
 
-def _build_live_intake_service(*, token: str, db_path: str) -> TelegramPollingIntakeService:
+def _build_live_intake_service(*, token: str, db_path: str, config) -> TelegramPollingIntakeService:
     return TelegramPollingIntakeService(
         TelegramBotApiClient(token=token),
         TelegramIntakeRepository(db_path),
+        AzureOpenAIRequestParser(
+            endpoint=config.azure_openai_endpoint,
+            api_key=config.azure_openai_api_key,
+            deployment=config.azure_openai_deployment,
+            api_version=config.azure_openai_api_version,
+        ),
     )
 
 
@@ -141,6 +151,10 @@ def _open_live_workflow(
         result_store=SqliteCartResultStore(config.cart_db_path),
         verifier=_build_live_cart_verifier(config),
     )
+    cart_remove_service = CoupangCartRemoveExecutor(
+        page=page,
+        credentials=None,
+    )
     shopping_agent = CoupangLiveBrowserShoppingAgent(
         driver=page,
         model=AzureOpenAIBrowserAgent(
@@ -153,9 +167,12 @@ def _open_live_workflow(
     )
     with PostgresSaver.from_conn_string(config.postgres_dsn) as checkpointer:
         checkpointer.setup()
+        from .price_tracker import AggregatingPriceTracker
+
         workflow = CoupangCartAgentLiveWorkflow(
             candidate_source=candidate_source,
             cart_service=cart_service,
+            cart_remove_service=cart_remove_service,
             notification_service=_build_live_notification_service(token=config.telegram_bot_token),
             operational_store=operational_store,
             agent_planner=AzureOpenAIPlanner(
@@ -164,7 +181,14 @@ def _open_live_workflow(
                 deployment=config.azure_openai_deployment,
                 api_version=config.azure_openai_api_version,
             ),
+            conversation_interpreter=AzureOpenAIConversationInterpreter(
+                endpoint=config.azure_openai_endpoint,
+                api_key=config.azure_openai_api_key,
+                deployment=config.azure_openai_deployment,
+                api_version=config.azure_openai_api_version,
+            ),
             shopping_agent=shopping_agent,
+            price_tracker=AggregatingPriceTracker(),
             checkpointer=checkpointer,
         )
         try:
@@ -288,7 +312,8 @@ def main(argv: list[str] | None = None) -> int:
         except ConfigError as exc:
             print(str(exc), file=sys.stderr)
             return 1
-        service = _build_live_intake_service(token=token, db_path=parsed.db_path)
+        config = load_config()
+        service = _build_live_intake_service(token=token, db_path=parsed.db_path, config=config)
         results = service.poll_once(
             offset=parsed.offset,
             timeout=parsed.timeout,
@@ -323,7 +348,8 @@ def main(argv: list[str] | None = None) -> int:
         except ConfigError as exc:
             print(str(exc), file=sys.stderr)
             return 1
-        service = _build_live_intake_service(token=token, db_path=parsed.db_path)
+        config = load_config()
+        service = _build_live_intake_service(token=token, db_path=parsed.db_path, config=config)
         next_offset = parsed.offset
         attempts: list[dict[str, object]] = []
         captured_result = None
@@ -375,6 +401,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.add_argument("--fixture-path", default=None)
         parser.add_argument("--worker-name", default="telegram-live-worker")
         parser.add_argument("--skip-error-response", action="store_true")
+        parser.add_argument("--price-monitor-interval", type=float, default=None, help="Enable price monitoring with this interval in seconds (default: from config)")
+        parser.add_argument("--no-price-monitor", action="store_true", help="Disable integrated price monitoring")
         parsed = parser.parse_args(args[1:])
 
         try:
@@ -387,10 +415,28 @@ def main(argv: list[str] | None = None) -> int:
         intake_service = TelegramPollingIntakeService(
             client=TelegramBotApiClient(token=config.telegram_bot_token),
             repository=intake_repository,
+            request_parser=AzureOpenAIRequestParser(
+                endpoint=config.azure_openai_endpoint,
+                api_key=config.azure_openai_api_key,
+                deployment=config.azure_openai_deployment,
+                api_version=config.azure_openai_api_version,
+            ),
         )
 
         try:
             with _open_live_workflow(config=config, fixture_path=parsed.fixture_path) as (workflow, operational_store):
+                price_monitor = None
+                if not parsed.no_price_monitor:
+                    from .price_monitor_worker import PriceMonitorWorker
+                    from .price_tracker import AggregatingPriceTracker
+
+                    price_monitor = PriceMonitorWorker(
+                        store=operational_store,
+                        notification_service=_build_live_notification_service(token=config.telegram_bot_token),
+                        price_tracker=AggregatingPriceTracker(),
+                        interval_seconds=0,  # interval managed by TelegramLiveWorker
+                    )
+                price_interval = parsed.price_monitor_interval or config.price_monitor_interval_seconds
                 worker = TelegramLiveWorker(
                     worker_name=parsed.worker_name,
                     intake_service=intake_service,
@@ -399,6 +445,8 @@ def main(argv: list[str] | None = None) -> int:
                     poll_timeout=parsed.timeout,
                     sleep_seconds=parsed.sleep_seconds,
                     send_error_response=not parsed.skip_error_response,
+                    price_monitor=price_monitor,
+                    price_monitor_interval_seconds=price_interval,
                 )
                 reports = worker.run(offset=parsed.offset, max_cycles=parsed.max_cycles)
         except KeyboardInterrupt:
@@ -828,6 +876,54 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0 if result.success else 2
 
+    if command == "price-monitor":
+        parser = argparse.ArgumentParser(prog="python -m coupang_cart_agent price-monitor")
+        parser.add_argument("--interval-seconds", type=float, default=None, help="Monitoring interval (default: from config or 180s)")
+        parser.add_argument("--max-cycles", type=int, default=None)
+        parsed = parser.parse_args(args[1:])
+
+        try:
+            config = load_config()
+        except ConfigError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+
+        if not config.postgres_dsn:
+            print("POSTGRES_DSN or DATABASE_URL is required for price-monitor.", file=sys.stderr)
+            return 1
+
+        from .price_monitor_worker import PriceMonitorWorker
+        from .price_tracker import AggregatingPriceTracker
+
+        operational_store = PostgresOperationalStore(config.postgres_dsn)
+        operational_store.setup()
+        notification_service = _build_live_notification_service(token=config.telegram_bot_token)
+        price_tracker = AggregatingPriceTracker()
+        interval = parsed.interval_seconds or config.price_monitor_interval_seconds
+
+        worker = PriceMonitorWorker(
+            store=operational_store,
+            notification_service=notification_service,
+            price_tracker=price_tracker,
+            interval_seconds=interval,
+        )
+
+        try:
+            reports = worker.run(max_cycles=parsed.max_cycles)
+        except KeyboardInterrupt:
+            print(json.dumps({"message": "Price monitor stopped by operator."}, ensure_ascii=False, indent=2))
+            return 0
+
+        print(
+            json.dumps(
+                {"mode": "price-monitor", "reports": [r.as_dict() for r in reports]},
+                ensure_ascii=False,
+                indent=2,
+                default=str,
+            )
+        )
+        return 0
+
     if command == "serve-http":
         parser = argparse.ArgumentParser(prog="python -m coupang_cart_agent serve-http")
         parser.add_argument("--host", default="0.0.0.0")
@@ -850,7 +946,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(
         "Usage: python -m coupang_cart_agent "
-        "[contracts-example|check-config|parse-telegram-message|poll-telegram-once|capture-telegram-live-request|integration-demo|cart-live-add|cart-live-inspect-session|show-captured-candidates|send-telegram-notification|integration-live-request|integration-live-telegram-once|integration-live-telegram-worker|serve-http]",
+        "[contracts-example|check-config|parse-telegram-message|poll-telegram-once|capture-telegram-live-request|integration-demo|cart-live-add|cart-live-inspect-session|show-captured-candidates|send-telegram-notification|integration-live-request|integration-live-telegram-once|integration-live-telegram-worker|price-monitor|serve-http]",
         file=sys.stderr,
     )
     return 1

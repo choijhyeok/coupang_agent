@@ -1,0 +1,183 @@
+@startuml Coupang Cart Agent — Full Architecture Flow
+!theme plain
+skinparam backgroundColor #FEFEFE
+skinparam defaultFontSize 11
+skinparam ActivityDiamondFontSize 10
+skinparam noteFontSize 10
+skinparam legendFontSize 10
+skinparam titleFontSize 16
+skinparam ArrowThickness 1.5
+
+title **Coupang Cart Agent — 전체 흐름 (PlantUML)**
+
+' ============================================================
+' ACTORS & PARTICIPANTS
+' ============================================================
+actor "사용자\n(Telegram)" as User
+participant "Telegram\nBot API" as TelegramAPI
+box "TelegramLiveWorker" #E8F5E9
+  participant "TelegramPollingIntakeService\n(telegram_intake.py)" as Intake
+  participant "TelegramIntakeRepository\n(telegram_persistence.py)" as IntakeDB
+  participant "Worker Loop\n(telegram_worker.py)" as Worker
+end box
+box "LangGraph Workflow (live_workflow.py)" #E3F2FD
+  participant "load_context" as LC
+  participant "agent_plan" as AP
+  participant "browser_shop" as BS
+  participant "load_candidates" as LCand
+  participant "select_products" as SP
+  participant "evaluate_price" as EP
+  participant "add_to_cart" as ATC
+  participant "remove_from_cart" as RFC
+  participant "notify" as NT
+  participant "persist" as PS
+end box
+box "External Services" #FFF3E0
+  participant "Azure OpenAI\n(azure_openai.py)" as LLM
+  participant "Coupang Browser\n(live_browser_agent.py)" as Browser
+  participant "Price Providers\n(price_tracker.py)" as PriceProviders
+  participant "PostgreSQL\n(postgres_store.py)" as PG
+end box
+
+' ============================================================
+' FLOW
+' ============================================================
+
+== 1. Telegram 메시지 수신 ==
+
+User -> TelegramAPI : 텍스트 메시지\n("신라면 담아줘")
+TelegramAPI -> Intake : getUpdates\n(long polling)
+
+Intake -> Intake : extract_inbound_message(update)
+Intake -> LLM : classify_follow_up_message()\n→ confirm/reject/next/\ncancel/remove/null
+note right
+  **follow-up 분류**
+  "ㅇㅇ 담아줘" → confirm
+  "다른 거 보여줘" → next
+  "취소" → cancel
+  "삭제해줘" → remove_request
+  일반 텍스트 → new_request
+end note
+
+Intake -> LLM : parse_items(text)\n→ ShoppingRequest
+note right
+  **요청 파싱**
+  items: [{name, quantity, constraints}]
+  LLM 실패 시 rule-based fallback
+end note
+
+Intake -> IntakeDB : record_envelope()\n(SQLite pending)
+
+== 2. Worker 메인 루프 ==
+
+Worker -> IntakeDB : load_pending_envelopes()
+Worker -> IntakeDB : mark_envelope_processing()
+Worker -> Worker : run_envelope(envelope, thread_id)
+
+== 3. LangGraph 워크플로우 실행 ==
+
+group #E3F2FD LangGraph Sequential Nodes
+
+  Worker -> LC : **① load_context**
+  LC -> PG : load_selection_context(user_id)
+  LC -> PG : load_thread_context(thread_id)
+  LC -> LLM : ConversationInterpreter.classify()\n→ user_decision 결정
+  note right
+    **user_decision 분기**
+    • "new_request" → 신규 요청
+    • "confirm" → 제안 수락
+    • "reject" / "next" → 다른 추천
+    • "cancel" → 요청 취소
+    • "remove_request" → 장바구니 제거
+  end note
+
+  LC -> AP : **② agent_plan**
+  note right
+    skip 조건:
+    failed_stage 존재 OR
+    user_decision ≠ "new_request"
+  end note
+  AP -> LLM : AzureOpenAIPlanner.plan_request()
+  AP --> AP : AgentPlan 생성\n(search_queries, mode)
+
+  AP -> BS : **③ browser_shop**
+  note right
+    skip 조건:
+    user_decision ≠ "legacy_direct_execute"
+    (현재 대부분 skip됨)
+  end note
+  BS -> Browser : CoupangLiveBrowserShoppingAgent.run()
+
+  BS -> LCand : **④ load_candidates**
+  note right
+    skip 조건:
+    failed_stage 존재 OR
+    cart_results 존재 OR
+    user_decision ≠ "new_request"
+  end note
+  LCand -> Browser : candidate_source(request)\n→ 쿠팡 검색/상품페이지 크롤링
+  LCand --> LCand : candidates_by_item 저장
+
+  LCand -> SP : **⑤ select_products**
+  note right
+    분기:
+    • new_request → _build_pending_proposal()
+      → status="awaiting_user_confirmation"
+    • reject/next → 다음 후보 선택
+    • confirm/cancel → skip
+  end note
+  SP -> SP : selection_context 참조\n(구매이력, 최근대화)\n→ 점수 산출 → 정렬
+
+  SP -> EP : **⑥ evaluate_price**
+  note right
+    skip 조건:
+    price_tracker 없음 OR
+    pending_proposal 없음
+  end note
+  EP -> PriceProviders : get_all_price_histories()\n→ Danawa + Lowchart + GenieAlert
+  EP -> EP : PriceJudgmentEngine.assess()\n→ buy_now / reasonable / wait
+
+  EP -> ATC : **⑦ add_to_cart**
+  note right
+    skip 조건:
+    user_decision ≠ "confirm"
+    OR failed_stage 존재
+  end note
+  ATC -> Browser : cart_service.add_products()\n→ Playwright 장바구니 추가
+  ATC --> ATC : 실패 시 다른 후보로 재제안
+
+  ATC -> RFC : **⑧ remove_from_cart**
+  note right
+    skip 조건:
+    user_decision ≠ "remove_request"
+  end note
+  RFC -> Browser : cart_remove_service.remove_products()
+
+  RFC -> NT : **⑨ notify**
+  NT -> NT : notification payload 빌드
+  note right
+    **payload 종류**
+    • proposal → 추천 카드 (가격비교 표 포함)
+    • result(성공) → 담기 완료
+    • result(실패) → 실패 안내
+    • remove_result → 제거 결과
+    • cancelled → 취소 안내
+  end note
+  NT -> TelegramAPI : send_photo() / send_message()
+  TelegramAPI -> User : 알림 전송
+
+  NT -> PS : **⑩ persist**
+  PS -> LLM : summarize_conversation()
+  PS -> PG : record_run()\n(workflow 결과 영속화)
+
+end group
+
+Worker -> IntakeDB : mark_envelope_completed()
+
+== 4. 가격 모니터링 (주기적) ==
+
+Worker -> PriceProviders : PriceMonitorWorker\n(180초 간격)
+PriceProviders -> PG : 추적 대상 로드 / 판정 저장
+PriceProviders -> TelegramAPI : 가격 변동 알림
+
+@enduml

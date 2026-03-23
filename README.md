@@ -1,350 +1,458 @@
 # Coupang Cart Agent
 
-Telegram shopping requests flow into an AOAI-guided live browser shopping agent, Coupang add-to-cart automation, and Telegram notifications. This workspace keeps the module contracts stable while adding a production-shaped integration path with LangGraph state persistence, Azure OpenAI planning/decision nodes, and PostgreSQL operational storage.
+텔레그램 메시지 한 줄로 쿠팡 장바구니에 상품을 담아주는 자동화 에이전트입니다.
 
-## Project Layout
+```
+사용자: "신라면 담아줘"
+봇:     [상품 사진]
+        농심 신라면 120g, 1개
+        810원
+        📊 쿠팡 810원 · 다나와 19,800원(최저 3,000원)
+        🟢 지금 사는 게 이득
+
+사용자: "ㅇㅇ 담아줘"
+봇:     장바구니 담기를 완료했습니다.
+        • 농심 신라면 120g, 1개 — 810원 · 1개
+```
+
+---
+
+## 한눈에 보는 전체 흐름
+
+```
+사용자 (Telegram)
+  │  "신라면 담아줘"
+  ▼
+┌─────────────────────────────────────────────────┐
+│  1. Telegram 수신                                │
+│     Bot API long-polling → 메시지 파싱(LLM)      │
+│     → ShoppingRequest 생성 → SQLite 큐에 저장     │
+└──────────────────────┬──────────────────────────┘
+                       ▼
+┌─────────────────────────────────────────────────┐
+│  2. Worker 루프                                  │
+│     SQLite에서 pending envelope 로드              │
+│     → LangGraph 워크플로우 실행                    │
+└──────────────────────┬──────────────────────────┘
+                       ▼
+┌─────────────────────────────────────────────────┐
+│  3. LangGraph 10-Node 워크플로우                  │
+│                                                  │
+│  ① load_context   — 구매이력/대화맥락 로드         │
+│  ② agent_plan     — LLM으로 검색 쿼리 생성        │
+│  ③ browser_shop   — (legacy, 대부분 skip)         │
+│  ④ load_candidates— 쿠팡 검색 → 후보 상품 수집     │
+│  ⑤ select_products— 점수 기반 최적 상품 선택       │
+│  ⑥ evaluate_price — 다나와/로우차트/지니얼럿 비교   │
+│  ⑦ add_to_cart    — 확인 시 장바구니 추가          │
+│  ⑧ remove_from_cart— 삭제 요청 시 장바구니 제거    │
+│  ⑨ notify         — Telegram 알림 (사진+가격비교)  │
+│  ⑩ persist        — PostgreSQL 결과 저장          │
+└──────────────────────┬──────────────────────────┘
+                       ▼
+               사용자에게 결과 전달
+```
+
+### 대화 흐름 (Proposal-first UX)
+
+에이전트는 바로 장바구니에 담지 않고 **먼저 추천안을 보여주고 사용자 확인을 받습니다.**
+
+| 사용자 입력 | 에이전트 동작 |
+|---|---|
+| `신라면 담아줘` | 쿠팡 검색 → 최적 상품 추천 (사진 + 가격 비교 표) |
+| `ㅇㅇ 담아줘` | 추천 수락 → 실제 장바구니에 담기 |
+| `다른 거 보여줘` | 다음 후보 상품으로 교체 제안 |
+| `취소` | 현재 요청 취소 |
+| `빼줘` / `삭제해줘` | 장바구니에서 상품 제거 |
+
+---
+
+## 쿠팡 웹 크롤링 방식
+
+쿠팡은 CSS 클래스명이 `__NEXT_DATA__`, `a1b2c3` 식으로 빌드마다 바뀝니다.
+이 에이전트는 **CSS 클래스를 전혀 사용하지 않고** 아래 3중 전략으로 크롤링합니다.
+
+### 전략 1: Scrapling `adaptive=True` — 자동 학습 셀렉터
+
+```python
+# scrapling_adapter.py
+adaptor.css(
+    "a[href*='/vp/products/']",     # URL 경로 패턴 (불변)
+    identifier="coupang-product-links",
+    adaptive=True,                   # ← 핵심: 태그가 바뀌어도 자동 추적
+    auto_save=True,                  # SQLite에 셀렉터 매핑 저장
+)
+```
+
+[Scrapling](https://github.com/D4Vinci/Scrapling)의 adaptive 모드는 이전 크롤링에서 학습한 요소 위치를 SQLite에 저장하고, 다음 크롤링에서 HTML 구조가 바뀌어도 유사한 요소를 자동으로 찾아냅니다.
+
+### 전략 2: CSS 클래스 대신 불변(invariant) 속성에 의존
+
+| 방식 | 예시 | 왜 안 변하는가 |
+|---|---|---|
+| **URL 경로 패턴** | `a[href*='/vp/products/']` | 쿠팡 URL 구조는 SEO/라우팅의 근간 |
+| **텍스트 내용** | `장바구니 담기`, `더보기` | UI 텍스트는 사용자에게 보이므로 함부로 못 바꿈 |
+| **정규식** | `([0-9][0-9,]{2,})\s*원?` | 가격/평점 표기 형식은 불변 |
+| **JSON-LD** | `<script type="application/ld+json">` | SEO용 구조화 데이터, 표준 스키마 |
+| **ARIA role** | `get_by_role("button")` | 웹 접근성 표준 속성 |
+
+### 전략 3: JavaScript `page.evaluate()` — DOM 런타임 탐색
+
+```javascript
+// cart_adapters.py — 브라우저 내부에서 직접 실행
+document.querySelectorAll("button, a, [role='button']")
+  .filter(el => isVisible(el))          // 화면에 보이는 것만
+  .map(el => {
+    const role = el.getAttribute('role') || el.tagName;
+    const text = el.innerText || el.getAttribute('aria-label');
+    return `${role}:${text}`;           // 클래스 대신 역할+텍스트 수집
+  })
+```
+
+CSS 클래스가 뭐든 상관없이 **"화면에 보이는 버튼/링크의 텍스트와 역할"** 을 동적으로 수집합니다.
+
+### 클릭 대상 찾기 — 우선순위 체인
+
+요소를 클릭할 때도 CSS 셀렉터가 아닌 **텍스트 + 역할 기반 매칭**을 사용합니다:
+
+```
+1순위: Scrapling이 저장한 adaptive hint 셀렉터
+2순위: page.get_by_role("button", name="장바구니 담기")  — ARIA 역할 + 텍스트
+3순위: page.get_by_text("상품명")                       — 텍스트 매칭
+4순위: page.locator("a").filter(has_text="...")          — 태그 + 텍스트
+```
+
+**결론: 쿠팡이 CSS 클래스를 매일 바꿔도, URL 경로·텍스트·ARIA role·JSON-LD는 바뀌지 않으므로 크롤링이 유지됩니다.**
+
+### 가격 비교 데이터 수집
+
+에이전트는 쿠팡 가격 외에 **외부 가격 추적 사이트 3곳**의 데이터를 수집하여 비교합니다:
+
+| 출처 | 방식 | URL 형식 |
+|---|---|---|
+| **다나와** (danawa.com) | 이름으로 검색 → AJAX POST | `search.danawa.com/dsearch.php?k1=상품명` |
+| **로우차트** (lowchart.com) | SSR, httpx로 직접 요청 | `lowchart.com/{productId}-{itemId}` |
+| **지니얼럿** (geniealert.co.kr) | SSR, httpx로 직접 요청 | `geniealert.co.kr/goods/detail/{productId}?itemId=...` |
+
+수집된 데이터는 `PriceJudgmentEngine`이 판정합니다:
+- 🟢 `buy_now` — 지금 사는 게 이득
+- 🟡 `reasonable` — 적당한 가격
+- 🔴 `wait` — 기다리는 게 나음
+
+---
+
+## 아키텍처 다이어그램 (PlantUML)
+
+아래 시퀀스 다이어그램은 `coupang_cart_agent_flow.puml` 파일을 [plantuml.com](https://www.plantuml.com/plantuml/uml/) 또는 VS Code PlantUML 확장에서 렌더링할 수 있습니다.
+
+<details>
+<summary>PlantUML 소스 코드 (클릭하여 펼치기)</summary>
+
+```plantuml
+@startuml Coupang Cart Agent — Full Architecture Flow
+!theme plain
+skinparam backgroundColor #FEFEFE
+skinparam defaultFontSize 11
+skinparam ActivityDiamondFontSize 10
+skinparam noteFontSize 10
+skinparam legendFontSize 10
+skinparam titleFontSize 16
+skinparam ArrowThickness 1.5
+
+title **Coupang Cart Agent — 전체 흐름 (PlantUML)**
+
+actor "사용자\n(Telegram)" as User
+participant "Telegram\nBot API" as TelegramAPI
+box "TelegramLiveWorker" #E8F5E9
+  participant "TelegramPollingIntakeService\n(telegram_intake.py)" as Intake
+  participant "TelegramIntakeRepository\n(telegram_persistence.py)" as IntakeDB
+  participant "Worker Loop\n(telegram_worker.py)" as Worker
+end box
+box "LangGraph Workflow (live_workflow.py)" #E3F2FD
+  participant "load_context" as LC
+  participant "agent_plan" as AP
+  participant "browser_shop" as BS
+  participant "load_candidates" as LCand
+  participant "select_products" as SP
+  participant "evaluate_price" as EP
+  participant "add_to_cart" as ATC
+  participant "remove_from_cart" as RFC
+  participant "notify" as NT
+  participant "persist" as PS
+end box
+box "External Services" #FFF3E0
+  participant "Azure OpenAI\n(azure_openai.py)" as LLM
+  participant "Coupang Browser\n(live_browser_agent.py)" as Browser
+  participant "Price Providers\n(price_tracker.py)" as PriceProviders
+  participant "PostgreSQL\n(postgres_store.py)" as PG
+end box
+
+== 1. Telegram 메시지 수신 ==
+
+User -> TelegramAPI : 텍스트 메시지\n("신라면 담아줘")
+TelegramAPI -> Intake : getUpdates\n(long polling)
+
+Intake -> Intake : extract_inbound_message(update)
+Intake -> LLM : classify_follow_up_message()\n→ confirm/reject/next/\ncancel/remove/null
+note right
+  **follow-up 분류**
+  "ㅇㅇ 담아줘" → confirm
+  "다른 거 보여줘" → next
+  "취소" → cancel
+  "삭제해줘" → remove_request
+  일반 텍스트 → new_request
+end note
+
+Intake -> LLM : parse_items(text)\n→ ShoppingRequest
+note right
+  **요청 파싱**
+  items: [{name, quantity, constraints}]
+  LLM 실패 시 rule-based fallback
+end note
+
+Intake -> IntakeDB : record_envelope()\n(SQLite pending)
+
+== 2. Worker 메인 루프 ==
+
+Worker -> IntakeDB : load_pending_envelopes()
+Worker -> IntakeDB : mark_envelope_processing()
+Worker -> Worker : run_envelope(envelope, thread_id)
+
+== 3. LangGraph 워크플로우 실행 ==
+
+group #E3F2FD LangGraph Sequential Nodes
+
+  Worker -> LC : **① load_context**
+  LC -> PG : load_selection_context(user_id)
+  LC -> PG : load_thread_context(thread_id)
+  LC -> LLM : ConversationInterpreter.classify()\n→ user_decision 결정
+  note right
+    **user_decision 분기**
+    • "new_request" → 신규 요청
+    • "confirm" → 제안 수락
+    • "reject" / "next" → 다른 추천
+    • "cancel" → 요청 취소
+    • "remove_request" → 장바구니 제거
+  end note
+
+  LC -> AP : **② agent_plan**
+  note right
+    skip 조건:
+    failed_stage 존재 OR
+    user_decision ≠ "new_request"
+  end note
+  AP -> LLM : AzureOpenAIPlanner.plan_request()
+  AP --> AP : AgentPlan 생성\n(search_queries, mode)
+
+  AP -> BS : **③ browser_shop**
+  note right
+    skip 조건:
+    user_decision ≠ "legacy_direct_execute"
+    (현재 대부분 skip됨)
+  end note
+  BS -> Browser : CoupangLiveBrowserShoppingAgent.run()
+
+  BS -> LCand : **④ load_candidates**
+  note right
+    skip 조건:
+    failed_stage 존재 OR
+    cart_results 존재 OR
+    user_decision ≠ "new_request"
+  end note
+  LCand -> Browser : candidate_source(request)\n→ 쿠팡 검색/상품페이지 크롤링
+  LCand --> LCand : candidates_by_item 저장
+
+  LCand -> SP : **⑤ select_products**
+  note right
+    분기:
+    • new_request → _build_pending_proposal()
+      → status="awaiting_user_confirmation"
+    • reject/next → 다음 후보 선택
+    • confirm/cancel → skip
+  end note
+  SP -> SP : selection_context 참조\n(구매이력, 최근대화)\n→ 점수 산출 → 정렬
+
+  SP -> EP : **⑥ evaluate_price**
+  note right
+    skip 조건:
+    price_tracker 없음 OR
+    pending_proposal 없음
+  end note
+  EP -> PriceProviders : get_all_price_histories()\n→ Danawa + Lowchart + GenieAlert
+  EP -> EP : PriceJudgmentEngine.assess()\n→ buy_now / reasonable / wait
+
+  EP -> ATC : **⑦ add_to_cart**
+  note right
+    skip 조건:
+    user_decision ≠ "confirm"
+    OR failed_stage 존재
+  end note
+  ATC -> Browser : cart_service.add_products()\n→ Playwright 장바구니 추가
+  ATC --> ATC : 실패 시 다른 후보로 재제안
+
+  ATC -> RFC : **⑧ remove_from_cart**
+  note right
+    skip 조건:
+    user_decision ≠ "remove_request"
+  end note
+  RFC -> Browser : cart_remove_service.remove_products()
+
+  RFC -> NT : **⑨ notify**
+  NT -> NT : notification payload 빌드
+  note right
+    **payload 종류**
+    • proposal → 추천 카드 (가격비교 표 포함)
+    • result(성공) → 담기 완료
+    • result(실패) → 실패 안내
+    • remove_result → 제거 결과
+    • cancelled → 취소 안내
+  end note
+  NT -> TelegramAPI : send_photo() / send_message()
+  TelegramAPI -> User : 알림 전송
+
+  NT -> PS : **⑩ persist**
+  PS -> LLM : summarize_conversation()
+  PS -> PG : record_run()\n(workflow 결과 영속화)
+
+end group
+
+Worker -> IntakeDB : mark_envelope_completed()
+
+== 4. 가격 모니터링 (주기적) ==
+
+Worker -> PriceProviders : PriceMonitorWorker\n(180초 간격)
+PriceProviders -> PG : 추적 대상 로드 / 판정 저장
+PriceProviders -> TelegramAPI : 가격 변동 알림
+
+@enduml
+```
+
+</details>
+
+---
+
+## 프로젝트 구조
 
 ```text
-.
-├── coupang_cart_agent/
-│   ├── azure_openai.py
-│   ├── cart_adapters.py
-│   ├── cart_executor.py
-│   ├── cart_persistence.py
-│   ├── candidate_sources.py
-│   ├── cli.py
-│   ├── config.py
-│   ├── contracts.py
-│   ├── http_server.py
-│   ├── integration.py
-│   ├── live_browser_agent.py
-│   ├── live_workflow.py
-│   ├── notifications.py
-│   ├── postgres_store.py
-│   ├── selection.py
-│   ├── selection_context.py
-│   ├── services.py
-│   ├── telegram_intake.py
-│   └── telegram_persistence.py
-├── docker-compose.yml
-├── Dockerfile
-├── main.py
-├── pyproject.toml
-└── tests/
+coupang_cart_agent/
+├── cli.py                 # CLI 진입점 (모든 명령어)
+├── config.py              # 환경변수·설정 로드
+├── contracts.py           # 공통 데이터 타입 (ShoppingRequest, ProductCandidate, PriceHistory 등)
+├── services.py            # Protocol 인터페이스 정의 (DI 기반)
+│
+├── telegram_intake.py     # Telegram 메시지 수신 + 요청 파싱
+├── telegram_persistence.py# Telegram 큐 SQLite 저장소
+├── telegram_worker.py     # 메인 Worker 루프 (poll → workflow → persist)
+│
+├── live_workflow.py       # LangGraph 10-Node 워크플로우
+├── integration.py         # 레거시 선형 파이프라인 + ConversationInterpreter
+│
+├── azure_openai.py        # Azure OpenAI 클라이언트 (파서/플래너/분류/브라우저에이전트)
+├── live_browser_agent.py  # 브라우저 에이전트 (observe → plan → act 루프)
+├── cart_adapters.py       # Playwright 페이지 드라이버 + Scrapling 관찰
+├── scrapling_adapter.py   # HTML 파싱 (adaptive 셀렉터, JSON-LD 추출)
+│
+├── candidate_sources.py   # 후보 상품 수집 (라이브 브라우저 / fixture / 검색 API)
+├── selection.py           # 후보 상품 점수 산출 + 정렬
+├── selection_context.py   # 구매 이력·최근 대화 맥락
+│
+├── cart_executor.py       # 장바구니 담기/제거 실행
+├── cart_persistence.py    # 장바구니 결과 SQLite 저장
+├── cart_verification.py   # 담기 후 장바구니 검증
+│
+├── price_tracker.py       # 가격 비교 (다나와 / 로우차트 / 지니얼럿)
+├── price_judgment.py      # 가격 판정 엔진 (buy_now / reasonable / wait)
+├── price_monitor_worker.py# 주기적 가격 모니터링
+│
+├── notifications.py       # Telegram 알림 포맷팅 + 전송
+├── postgres_store.py      # PostgreSQL 운영 저장소
+└── http_server.py         # 헬스체크 HTTP 서버
 ```
 
-## Runtime Modes
+---
 
-### Demo Path
+## 실행 방법
 
-Safe local validation. Uses deterministic candidates, a fake Coupang page, and a local notification sender.
+### 사전 준비
 
-```bash
-uv run python -m coupang_cart_agent integration-demo "콜라 제로 2개 담아줘" --scenario success
-uv run python -m coupang_cart_agent integration-demo "삼다수 1박스 담아줘" --scenario cart-failure
-```
-
-This path is useful for local smoke checks only. It is not sufficient for live completion.
-
-### Live Path
-
-Production-shaped integration. Uses:
-
-- Telegram Bot API intake
-- LangGraph workflow checkpoints in PostgreSQL
-- Azure OpenAI planning node plus constrained browser-action decisions
-- observation-driven browser agent for search -> result selection -> option handling -> add-to-cart
-- live browser candidate discovery by default; fixture/search-endpoint sources only for debug
-- real Coupang cart automation on an attached logged-in Chrome session
-- real Telegram notifications
-
-Primary live commands:
-
-```bash
-uv run python -m coupang_cart_agent integration-live-request \
-  "양파 1개 담아줘" \
-  --user-id telegram:cli-user \
-  --chat-id cli-chat
-
-uv run python -m coupang_cart_agent integration-live-telegram-once \
-  --timeout 10 \
-  --intake-db-path .artifacts/telegram_intake.sqlite3
-
-uv run python -m coupang_cart_agent integration-live-telegram-worker \
-  --timeout 30 \
-  --sleep-seconds 1 \
-  --intake-db-path .artifacts/telegram_intake.sqlite3
-```
-
-`integration-live-request` bypasses Telegram network polling but still runs the LangGraph, Azure OpenAI, PostgreSQL, Coupang, and Telegram-notification path.
-
-`integration-live-telegram-once` is the operator command for the full path:
-
-1. poll Telegram once
-2. parse the first valid request
-3. run the live LangGraph workflow
-4. let the AOAI browser agent search Coupang live, choose a product, and add it to the cart
-5. send a Telegram notification
-6. persist workflow state, agent reasoning summary, last observation, and cart/session history to PostgreSQL
-
-`integration-live-telegram-worker` is the always-on operator path:
-
-1. restore the previous `next_offset` and any pending envelopes from the Telegram intake SQLite DB
-2. long-poll Telegram for new `~~~ 담아줘` messages
-3. persist each parsed envelope before workflow execution
-4. run the LangGraph live workflow for each pending envelope
-5. persist worker cursor and per-message completion state so restarts resume safely
-
-## Environment
-
-Create `.env` from the example:
+1. **환경변수 설정**
 
 ```bash
 cp .env.example .env
+# 아래 값을 채워넣으세요
 ```
 
-Required for the live workflow:
+| 환경변수 | 필수 | 설명 |
+|---|---|---|
+| `TELEGRAM_BOT_TOKEN` | ✅ | Telegram Bot API 토큰 |
+| `AZURE_OPENAI_ENDPOINT` | ✅ | Azure OpenAI 엔드포인트 |
+| `AZURE_OPENAI_API_KEY` | ✅ | Azure OpenAI API 키 |
+| `AZURE_OPENAI_DEPLOYMENT` | ✅ | 모델 배포 이름 |
+| `POSTGRES_DSN` | ✅ | PostgreSQL 연결 문자열 |
+| `COUPANG_CHROME_USER_DATA_DIR` | ✅ | Chrome 프로필 경로 |
+| `COUPANG_CHROME_PROFILE_DIRECTORY` | ✅ | 사용할 Chrome 프로필 |
+| `COUPANG_BROWSER_LAUNCH_MODE` | — | `browser_use` (기본값) |
 
-- `TELEGRAM_BOT_TOKEN`
-- `AZURE_OPENAI_ENDPOINT`
-- `AZURE_OPENAI_API_KEY`
-- `AZURE_OPENAI_DEPLOYMENT`
-- `POSTGRES_DSN`
+2. **Chrome에서 쿠팡 로그인** — 에이전트가 직접 로그인하지 않습니다. 사람이 Chrome으로 먼저 쿠팡에 로그인해 놓아야 합니다.
 
-Optional debug-only input:
-
-- `COUPANG_SEARCH_ENDPOINT`
-
-The default `integration-live-*` path now discovers proposal candidates from the attached live Coupang browser session. `COUPANG_SEARCH_ENDPOINT` and `--fixture-path` are no longer part of the success path; use them only to debug extraction or compare against captured data.
-
-If you want to force a debug candidate source, pass `--fixture-path` explicitly:
+3. **PostgreSQL 실행**
 
 ```bash
-uv run python -m coupang_cart_agent integration-live-request \
-  "양파 1개 담아줘" \
-  --fixture-path tests/fixtures/coupang_search_onion_fixture.json
+docker compose up -d postgres
 ```
 
-That debug path still uses LangGraph, PostgreSQL, Azure OpenAI, Coupang cart automation, and Telegram notifications, but it is not live-completion evidence. The primary live path no longer depends on a prepared product URL, product ID, `COUPANG_SEARCH_ENDPOINT`, or candidate fixture.
-
-Validated live browser path on March 11, 2026:
+### 상시 운영 (Telegram Worker)
 
 ```bash
-COUPANG_BROWSER_LAUNCH_MODE=browser_use
-COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome"
-COUPANG_CHROME_PROFILE_DIRECTORY="Profile 1"
+uv run python -m coupang_cart_agent integration-live-telegram-worker \
+  --timeout 30 --sleep-seconds 1 \
+  --intake-db-path .artifacts/telegram_intake.sqlite3
 ```
 
-The `browser_use` mode is the preferred live path in this repository. It uses a copied real Chrome profile over CDP so the worker runs with an operator-approved session instead of a fresh Playwright context.
-
-`Default` returned `Access Denied` in this workspace. `Profile 1` restored the authenticated Coupang session and completed add-to-cart successfully. Keep `playwright` only as a debugging fallback for selector work, not as the primary live path.
-
-Supported attach launch modes:
-
-- `browser_use`: copy a trusted local Chrome profile and run the agent against that attached profile
-- `cdp_chrome`: launch a copied Chrome profile under CDP from the agent process
-- `existing_cdp`: connect to an already running operator Chrome started with `--remote-debugging-port`
-
-### Attach Mode Operating Rules
-
-The live cart automation runs in attach mode only:
-
-1. A human operator must open Chrome and complete Coupang login manually before starting the agent.
-2. The agent attaches to the already logged-in Chrome profile or another explicitly allowed session state.
-3. The agent does not fill the Coupang login form, handle OTP, or bypass security checks.
-4. If Coupang redirects to login, shows `Access Denied`, or presents a security challenge, the run stops immediately and records a blocker-classified cart result.
-5. If a product is sold out or the visible option state is ambiguous, the agent stops safely and records a classified failure instead of guessing.
-6. The workflow stops after verified add-to-cart and must not continue into checkout or payment.
-
-Recommended operator preflight:
+### CLI 1회 실행
 
 ```bash
-uv run python -m coupang_cart_agent check-config
-uv run python -m coupang_cart_agent cart-live-inspect-session
-uv run python -m coupang_cart_agent cart-live-add \
-  --headed \
-  --product-url "https://www.coupang.com/vp/products/..." \
-  --product-id "..." \
-  --name "..." \
-  --quantity 1
+uv run python -m coupang_cart_agent integration-live-request "신라면 담아줘" \
+  --user-id telegram:me --chat-id my-chat-id
 ```
 
-`cart-live-add` prints `attach_mode_requires_operator_login: true` and the active Chrome profile directory so operators can confirm the run started from an already prepared session.
-
-Interpret `cart-live-inspect-session` before attempting a live run:
-
-- `error_type=LoginFailedError`: no reachable CDP endpoint or attachable browser process for the selected mode
-- `error_type=LoginRequiredError` with `page_kind=session_blocked`: the browser session is reachable, but Coupang cart still shows an unauthenticated state such as `로그인하기`
-- `error_type=AccessDeniedError` or `SecurityChallengeError`: stop and re-prepare the session; do not retry the shopping run blindly
-- no error and a non-blocked observation: the browser looks attachable enough to attempt a live search-to-cart run
-
-The current workspace produced both of the first two cases:
-
-- `existing_cdp` against an unused port returned a structured `LoginFailedError`
-- `existing_cdp` against a reachable local Chrome session on port `9226` attached successfully, reached `https://cart.coupang.com/cartView.pang`, and still returned `LoginRequiredError` / `session_blocked`
-
-That distinction matters operationally: CDP reachability alone does not prove the attached Chrome session is actually logged in to Coupang for cart actions.
-
-If the operator wants to attach to the exact running Chrome session instead of a copied profile, start Chrome manually with remote debugging enabled and switch the launch mode:
+### 데모 모드 (안전한 로컬 테스트)
 
 ```bash
-/Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome \
-  --remote-debugging-port=9223
-
-COUPANG_BROWSER_LAUNCH_MODE=existing_cdp \
-COUPANG_CHROME_REMOTE_DEBUGGING_PORT=9223 \
-uv run python -m coupang_cart_agent cart-live-add \
-  --product-url "https://www.coupang.com/vp/products/..." \
-  --product-id "..." \
-  --name "..."
+uv run python -m coupang_cart_agent integration-demo "콜라 제로 2개 담아줘" --scenario success
 ```
 
-## Docker Compose
-
-`docker compose up` starts a PostgreSQL container and an app container exposing health and demo smoke endpoints.
+### 기타 명령어
 
 ```bash
-docker compose up -d --build
-curl http://127.0.0.1:8080/healthz
-curl http://127.0.0.1:8080/smoke/demo
+check-config                    # 설정 점검
+cart-live-inspect-session       # 브라우저 세션 상태 확인
+parse-telegram-message "..."    # 텍스트 파싱 테스트
+price-monitor                   # 가격 모니터링 독립 실행
+serve-http                      # 헬스체크 HTTP 서버
 ```
 
-The compose app runs:
+---
 
-```bash
-uv run python -m coupang_cart_agent serve-http --host 0.0.0.0 --port 8080
-```
+## 안전 규칙
 
-The HTTP server is for health and smoke validation. Operators should run the live integration commands explicitly when real credentials and access are available.
+- 에이전트는 **장바구니 담기까지만** 합니다. 결제(checkout)나 결제(payment)로 진행하지 않습니다.
+- 에이전트는 쿠팡 로그인을 시도하지 않습니다. 로그인 페이지나 보안 챌린지를 만나면 즉시 중단합니다.
+- 품절이거나 옵션 상태가 모호하면 추측하지 않고 실패를 기록합니다.
 
-Draft live worker service:
+---
 
-```bash
-COUPANG_CHROME_USER_DATA_DIR_HOST="$HOME/Library/Application Support/Google/Chrome" \
-docker compose --profile live up -d worker
-```
-
-The `worker` service expects a trusted Chrome profile bind-mounted from the host into `/operator-chrome`, and it reuses `.artifacts/telegram_intake.sqlite3` plus PostgreSQL state so restarts can resume from the last processed Telegram offset.
-
-## Other Commands
-
-```bash
-uv run python -m coupang_cart_agent check-config
-uv run python -m coupang_cart_agent parse-telegram-message "콜라 제로 2개 담아줘"
-uv run python -m coupang_cart_agent poll-telegram-once --timeout 1
-uv run python -m coupang_cart_agent capture-telegram-live-request --timeout 30 --max-attempts 10
-uv run python -m coupang_cart_agent integration-live-telegram-worker --timeout 30 --sleep-seconds 1
-uv run python -m coupang_cart_agent cart-live-inspect-session
-uv run python -m coupang_cart_agent cart-live-add --headed --product-url "https://www.coupang.com/vp/products/..." --product-id "..." --name "..."
-uv run python -m coupang_cart_agent send-telegram-notification --chat-id <chat_id> --scenario success
-```
-
-## LangGraph Live Workflow
-
-The live workflow is defined in `coupang_cart_agent/live_workflow.py`.
-
-Node order:
-
-1. `load_context`
-2. `agent_plan`
-3. `browser_shop`
-4. `load_candidates` fallback only
-5. `select_products` fallback only
-6. `add_to_cart` fallback only
-7. `notify`
-8. `persist`
-
-State is checkpointed through LangGraph's PostgreSQL checkpointer using `thread_id = envelope.session.session_id`.
-
-Operational data is stored separately in PostgreSQL:
-
-- `workflow_threads`
-- `workflow_runs`
-- `prior_purchases`
-- `recent_session_signals`
-- `current_cart_snapshot_items`
-
-`workflow_runs` now stores the agent plan, reasoning summary, last observation snapshot, and step trace alongside cart results. That lets the workflow restore both prior purchase history and current-thread session signals on subsequent runs.
-
-For live browser-agent failures, the stored observation now explicitly distinguishes:
-
-- `session_blocked`: login page, unauthenticated cart state, Access Denied, or security challenge
-- `search_results`: reachable search page with visible product candidates
-- `product_page`: reachable PDP or option-selection state
-
-## Validation
-
-Unit and integration tests:
+## 테스트
 
 ```bash
 uv run python -m unittest discover -s tests
 ```
 
-Focused live-workflow tests:
+---
 
-```bash
-uv run python -m unittest tests.test_live_browser_agent tests.test_live_workflow
-```
-
-Docker smoke:
+## Docker Compose
 
 ```bash
 docker compose up -d --build
 curl http://127.0.0.1:8080/healthz
-curl http://127.0.0.1:8080/smoke/demo
-docker compose down -v
 ```
-
-Suggested live operator validation order:
-
-```bash
-uv run python -m coupang_cart_agent check-config
-uv run python -m coupang_cart_agent integration-live-request "양파 1개 담아줘"
-uv run python -m coupang_cart_agent integration-live-telegram-once --timeout 10
-uv run python -m coupang_cart_agent integration-live-telegram-worker --timeout 30 --sleep-seconds 1
-```
-
-Recorded live validation evidence:
-
-- Real Telegram intake capture succeeded for `telegram-update-286968896` with text `콜라 제로 2개 담아줘`
-- Real Telegram worker execution succeeded with:
-  `POSTGRES_DSN=postgresql://postgres:postgres@localhost:5432/coupang_cart_agent COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Profile 1' uv run python -m coupang_cart_agent integration-live-telegram-worker --timeout 1 --sleep-seconds 0 --max-cycles 1 --intake-db-path .artifacts/how22_telegram_intake.sqlite3 --fixture-path tests/fixtures/coupang_search_onion_fixture.json --skip-error-response`
-- Worker restart restored offset `286968897` from `.artifacts/how22_telegram_intake.sqlite3` and resumed with no duplicate processing on a second `integration-live-telegram-worker` run.
-- Telegram success notification payload recorded `총 1종, 2개, 17,960원 장바구니 담기 완료`.
-- March 18, 2026 login/session preflight succeeded with:
-  `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=browser_use COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Default' COUPANG_BROWSER_HEADLESS=false uv run python -m coupang_cart_agent cart-live-inspect-session`
-  The attached session opened `https://cart.coupang.com/cartView.pang`, classified the page as `browse`, and did not report `로그인하기` or Access Denied.
-- March 18, 2026 fixture-free live proposal and rerank path:
-  `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=browser_use COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Default' COUPANG_BROWSER_HEADLESS=false uv run python -m coupang_cart_agent integration-live-request '양파 담아줘' --user-id telegram:8201584878 --chat-id 8201584878 --thread-id how38-live-onion-20260318-a`
-  The run generated a Telegram proposal from `candidate_source_mode=live_browser` with live-discovered candidates and no `--fixture-path`, fixed product URL, manual product ID, or `COUPANG_SEARCH_ENDPOINT`.
-- March 18, 2026 verification guard regression evidence:
-  `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=browser_use COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Default' COUPANG_BROWSER_HEADLESS=false uv run python -m coupang_cart_agent integration-live-request 'ㅇㅇ 담아줘' --user-id telegram:8201584878 --chat-id 8201584878 --thread-id how38-live-onion-20260318-a`
-  The first onion confirmation stopped at `failed_stage=verification` because the cart stayed empty. The workflow did not report false success.
-- March 18, 2026 live rerank without fixture re-injection:
-  `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=browser_use COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Default' COUPANG_BROWSER_HEADLESS=false uv run python -m coupang_cart_agent integration-live-request '다른 거 보여줘' --user-id telegram:8201584878 --chat-id 8201584878 --thread-id how38-live-onion-20260318-a`
-  The workflow stayed on the same live-discovered candidate set and advanced to the next candidate instead of reloading a fixture source.
-- March 18, 2026 end-to-end success after rerank:
-  `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=browser_use COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Default' COUPANG_BROWSER_HEADLESS=false uv run python -m coupang_cart_agent integration-live-request 'ㅇㅇ 담아줘' --user-id telegram:8201584878 --chat-id 8201584878 --thread-id how38-live-onion-20260318-a`
-  The reranked onion candidate completed `add-to-cart -> verification -> Telegram completion` and the persisted thread status moved to `completed`.
-- March 18, 2026 second distinct fixture-free end-to-end success:
-  `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=browser_use COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Default' COUPANG_BROWSER_HEADLESS=false uv run python -m coupang_cart_agent integration-live-request '시리얼 1개 담아줘' --user-id telegram:8201584878 --chat-id 8201584878 --thread-id how38-live-cereal-20260318-a`
-  Followed by:
-  `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=browser_use COUPANG_CHROME_USER_DATA_DIR="$HOME/Library/Application Support/Google/Chrome" COUPANG_CHROME_PROFILE_DIRECTORY='Default' COUPANG_BROWSER_HEADLESS=false uv run python -m coupang_cart_agent integration-live-request 'ㅇㅇ 담아줘' --user-id telegram:8201584878 --chat-id 8201584878 --thread-id how38-live-cereal-20260318-a`
-  This request completed without fixtures and verification observed the cart count increase from 1 to 2 for `오리온 미쯔블랙 시리얼`.
-- March 16, 2026 structured attach/session failure evidence:
-  `POSTGRES_DSN='postgresql://postgres:postgres@localhost:5432/coupang_cart_agent' COUPANG_BROWSER_LAUNCH_MODE=existing_cdp COUPANG_CHROME_REMOTE_DEBUGGING_PORT=9226 uv run python -m coupang_cart_agent integration-live-request '양파 1개 담아줘' --user-id telegram:8201584878 --chat-id 8201584878`
-- Remaining live-quality debt is narrowed to follow-up issues, not core-path completion:
-  explicit brand/pack-size intent (`HOW-28`) and intermittent attached-browser navigation timeouts.
-
-## Notes
-
-- The workflow stops at verified add-to-cart. It must not continue into checkout or payment.
-- `COUPANG_USERNAME` and `COUPANG_PASSWORD` are optional legacy fields and are not used by the attach-mode live path.
-- `cart-live-inspect-session` is the fastest operator command to confirm whether the attached browser is really logged in, blocked by Access Denied/security, or simply missing a reachable CDP endpoint.
-- A reachable CDP session can still be unusable if Coupang cart renders `로그인하기`; treat that as a session/auth blocker, not a selector problem.
-- Live Telegram delivery now uses the system trust store through `truststore`, which avoids the `CERTIFICATE_VERIFY_FAILED` path that plain stdlib HTTPS showed in this workspace.
-- If Telegram delivery still fails, treat it as a token/chat/network issue first; TLS trust is no longer expected to be the default blocker on this branch.
-- `cart-live-add` remains useful for isolated Coupang selector debugging.
-- `integration-demo` and `/smoke/demo` are safe local validation paths.
-- `integration-live-*` commands are the production-shaped integration paths.
-- `--fixture-path` and `COUPANG_SEARCH_ENDPOINT` are debug-only candidate inputs. When they are used, treat the run as debug evidence rather than live-completion evidence.

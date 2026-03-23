@@ -172,6 +172,41 @@ class CartAddResult:
     evidence: dict[str, object] = field(default_factory=dict)
 
 
+class CartRemoveStage(StrEnum):
+    """Execution stage reached by the cart removal automation."""
+
+    SESSION = "session"
+    CART_PAGE = "cart_page"
+    ITEM_LOCATE = "item_locate"
+    REMOVE = "remove"
+    VERIFICATION = "verification"
+
+
+class CartRemoveFailureReason(StrEnum):
+    """Classified failure reasons for cart removal."""
+
+    LOGIN_REQUIRED = "login_required"
+    SECURITY_CHALLENGE = "security_challenge"
+    ITEM_NOT_FOUND = "item_not_found"
+    UI_ELEMENT_NOT_FOUND = "ui_element_not_found"
+    VERIFICATION_MISMATCH = "verification_mismatch"
+    UNKNOWN = "unknown"
+
+
+@dataclass(slots=True)
+class CartRemoveResult:
+    """Result from the Coupang cart removal automation."""
+
+    success: bool
+    product_name: str
+    stage: CartRemoveStage
+    message: str
+    failure_reason: CartRemoveFailureReason | None = None
+    cart_count_before: int | None = None
+    cart_count_after: int | None = None
+    evidence: dict[str, object] = field(default_factory=dict)
+
+
 class BrowserAgentActionType(StrEnum):
     """Constrained action space emitted by the browser agent model."""
 
@@ -191,6 +226,7 @@ class ObservedProduct:
 
     name: str
     href: str | None = None
+    image_url: str | None = None
     price_text: str | None = None
     rating_text: str | None = None
     review_count_text: str | None = None
@@ -291,6 +327,78 @@ class NotificationPayload:
     summary: str
     kind: str = "result"
     details: dict[str, object] = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Price tracking contracts
+# ---------------------------------------------------------------------------
+
+
+class PriceVerdict(StrEnum):
+    """Human-readable purchase timing verdict."""
+
+    BUY_NOW = "buy_now"             # 지금 사는 게 이득
+    REASONABLE = "reasonable"       # 적당한 가격
+    WAIT = "wait"                   # 기다리는 게 나음
+
+
+@dataclass(slots=True)
+class PriceDataPoint:
+    """A single historical price observation."""
+
+    price_krw: int
+    observed_at: datetime
+
+
+@dataclass(slots=True)
+class PriceHistory:
+    """Normalized price history fetched from a tracking provider."""
+
+    product_id: str
+    product_name: str
+    current_price_krw: int
+    average_price_krw: int
+    lowest_price_krw: int
+    highest_price_krw: int
+    recent_low_30d_krw: int | None = None
+    price_points: list[PriceDataPoint] = field(default_factory=list)
+    source: str = ""
+    fetched_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    confidence: float = 1.0
+
+
+@dataclass(slots=True)
+class PriceAssessment:
+    """Result of the price judgment engine."""
+
+    product_id: str
+    product_name: str
+    current_price_krw: int
+    verdict: PriceVerdict
+    verdict_reason: str
+    average_price_krw: int
+    lowest_price_krw: int
+    recent_low_30d_krw: int | None = None
+    discount_pct_vs_avg: float = 0.0
+    discount_pct_vs_recent_low: float | None = None
+    source: str = ""
+    assessed_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+
+@dataclass(slots=True)
+class TrackedProduct:
+    """A product registered for periodic price monitoring."""
+
+    user_id: str
+    chat_id: str
+    product_id: str
+    product_name: str
+    product_url: str
+    purchase_price_krw: int
+    last_verdict: PriceVerdict | None = None
+    last_assessed_at: datetime | None = None
+    registered_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    active: bool = True
 
 
 def demo_contract_payload() -> dict[str, object]:

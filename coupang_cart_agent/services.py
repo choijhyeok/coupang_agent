@@ -4,6 +4,7 @@ from typing import Protocol
 
 from .contracts import (
     CartAddResult,
+    CartRemoveResult,
     NotificationPayload,
     ProductCandidate,
     SelectionContext,
@@ -38,6 +39,12 @@ class CoupangCartService(Protocol):
     """Add selected products to a Coupang cart without advancing to checkout."""
 
     def add_products(self, selections: list[SelectedProduct]) -> list[CartAddResult]: ...
+
+
+class CoupangCartRemoveService(Protocol):
+    """Remove products from a Coupang cart by product name."""
+
+    def remove_products(self, product_names: list[str]) -> list[CartRemoveResult]: ...
 
 
 class NotificationService(Protocol):

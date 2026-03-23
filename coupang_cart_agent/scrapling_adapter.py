@@ -14,7 +14,7 @@ _CART_TEXT_PATTERN = re.compile(r"(?:장바구니\s*담기|카트에\s*담기|�
 _PRICE_PATTERN = re.compile(r"([0-9][0-9,]{2,})\s*원?")
 _RATING_PATTERN = re.compile(r"([0-5](?:\.[0-9])?)")
 _REVIEW_PATTERN = re.compile(r"(?:리뷰|후기|평점)?\s*\(?([0-9][0-9,]*)\)?")
-_QUANTITY_PATTERN = re.compile(r"(?:수량|수량변경)[^0-9]{0,8}(\d+)|(?<![0-9])(\d+)\s*개")
+_QUANTITY_PATTERN = re.compile(r"(?:수량|수량변경)[^0-9]{0,8}(\d+)")
 _PURCHASE_RESTRICTED_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(r"로켓프레시.*(장바구니에 담을 수 없|구매가 불가능|주문할 수 없|와우회원만)", re.IGNORECASE),
@@ -136,6 +136,7 @@ class ScraplingObservationAdapter:
                 {
                     "name": text[:160],
                     "href": href,
+                    "image_url": self._extract_image_url(anchor, url=url),
                     "price_text": self._first_match(_PRICE_PATTERN, container_text),
                     "rating_text": self._first_match(_RATING_PATTERN, container_text),
                     "review_count_text": self._first_match(_REVIEW_PATTERN, container_text),
@@ -182,7 +183,7 @@ class ScraplingObservationAdapter:
             quantity_text = quantity_match.group(0) if quantity_match else None
             quantity_raw = None
             if quantity_match:
-                quantity_raw = quantity_match.group(1) or quantity_match.group(2)
+                quantity_raw = quantity_match.group(1)
             supplemental: list[str] = []
             for raw_line in re.split(r"\n+", container_text):
                 line = self._normalize(raw_line)
@@ -215,9 +216,13 @@ class ScraplingObservationAdapter:
     ) -> dict[str, object]:
         product_json_ld = self._extract_product_from_json_ld(adaptor=adaptor)
         if product_json_ld is not None:
+            image_value = product_json_ld.get("image")
+            if isinstance(image_value, list):
+                image_value = next((item for item in image_value if item), None)
             return {
                 "name": str(product_json_ld.get("name") or url.rsplit("/", 1)[-1])[:160],
                 "href": str(product_json_ld.get("url") or url),
+                "image_url": self._normalize(image_value) or None,
                 "price_text": self._normalize((product_json_ld.get("offers") or {}).get("price")),
                 "rating_text": self._normalize((product_json_ld.get("aggregateRating") or {}).get("ratingValue")),
                 "review_count_text": self._normalize((product_json_ld.get("aggregateRating") or {}).get("reviewCount")),
@@ -231,6 +236,7 @@ class ScraplingObservationAdapter:
                 return {
                     "name": cleaned[:160],
                     "href": url,
+                    "image_url": self._extract_primary_image_url(adaptor=adaptor, url=url),
                     "price_text": self._first_match(_PRICE_PATTERN, body_text),
                     "rating_text": self._first_match(_RATING_PATTERN, body_text),
                     "review_count_text": self._first_match(_REVIEW_PATTERN, body_text),
@@ -251,6 +257,7 @@ class ScraplingObservationAdapter:
         return {
             "name": heading or url.rsplit("/", 1)[-1],
             "href": url,
+            "image_url": self._extract_primary_image_url(adaptor=adaptor, url=url),
             "price_text": self._first_match(_PRICE_PATTERN, body_text),
             "rating_text": self._first_match(_RATING_PATTERN, body_text),
             "review_count_text": self._first_match(_REVIEW_PATTERN, body_text),
@@ -389,6 +396,41 @@ class ScraplingObservationAdapter:
                 break
         return badges
 
+    def _extract_image_url(self, element, *, url: str) -> str | None:
+        containers = [element]
+        for ancestor in element.iterancestors():
+            containers.append(ancestor)
+            if getattr(ancestor, "tag", "") in {"li", "article", "section"}:
+                break
+        for container in containers:
+            for image in container.css("img[src], img[data-src], img[srcset], source[srcset]")[:6]:
+                image_url = self._normalize(
+                    image.attrib.get("src")
+                    or image.attrib.get("data-src")
+                    or self._first_srcset_url(image.attrib.get("srcset"))
+                )
+                if image_url:
+                    return urljoin(url, image_url)
+        return None
+
+    def _extract_primary_image_url(self, *, adaptor: Adaptor, url: str) -> str | None:
+        for selector in (
+            "meta[property='og:image']",
+            "meta[name='twitter:image']",
+            "img[src]",
+            "img[data-src]",
+        ):
+            for candidate in adaptor.css(selector)[:4]:
+                image_url = self._normalize(
+                    candidate.attrib.get("content")
+                    or candidate.attrib.get("src")
+                    or candidate.attrib.get("data-src")
+                    or self._first_srcset_url(candidate.attrib.get("srcset"))
+                )
+                if image_url:
+                    return urljoin(url, image_url)
+        return None
+
     @staticmethod
     def _selector_hint(selector) -> dict[str, str]:
         hint: dict[str, str] = {}
@@ -399,6 +441,16 @@ class ScraplingObservationAdapter:
         if xpath_selector:
             hint["xpath"] = xpath_selector
         return hint
+
+    @staticmethod
+    def _first_srcset_url(value: object) -> str | None:
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        first = raw.split(",", 1)[0].strip()
+        if not first:
+            return None
+        return first.split(" ", 1)[0].strip() or None
 
     @staticmethod
     def _purchase_blocked_reason(body_text: str, *, is_product_page: bool) -> str | None:
@@ -434,6 +486,12 @@ class ScraplingObservationAdapter:
                     {
                         "name": name[:160],
                         "href": href,
+                        "image_url": self._normalize(
+                            product.get("image")
+                            if not isinstance(product.get("image"), list)
+                            else next((item for item in product.get("image", []) if item), None)
+                        )
+                        or None,
                         "price_text": self._normalize(offers.get("price")),
                         "rating_text": self._normalize(aggregate.get("ratingValue")),
                         "review_count_text": self._normalize(aggregate.get("reviewCount")),

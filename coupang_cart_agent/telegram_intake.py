@@ -13,6 +13,7 @@ from uuid import uuid4
 
 import truststore
 
+from .azure_openai import AzureOpenAIRequestParser
 from .contracts import IntakeMode, RequestedItem, RequestSession, ShoppingRequest, ShoppingRequestEnvelope
 from .telegram_persistence import TelegramIntakeRepository
 
@@ -80,8 +81,11 @@ class TelegramBotApiClient:
         response = self._post("getMe", {})
         return dict(response.get("result", {}))
 
-    def send_message(self, *, chat_id: str, text: str) -> dict[str, Any]:
-        return self._post("sendMessage", {"chat_id": chat_id, "text": text})
+    def send_message(self, *, chat_id: str, text: str, parse_mode: str | None = None) -> dict[str, Any]:
+        payload: dict[str, object] = {"chat_id": chat_id, "text": text}
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
+        return self._post("sendMessage", payload)
 
     def send_photo(
         self,
@@ -89,10 +93,13 @@ class TelegramBotApiClient:
         chat_id: str,
         photo: str,
         caption: str | None = None,
+        parse_mode: str | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, object] = {"chat_id": chat_id, "photo": photo}
         if caption:
             payload["caption"] = caption
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
         return self._post("sendPhoto", payload)
 
     def _post(self, method: str, payload: dict[str, object]) -> dict[str, Any]:
@@ -132,6 +139,7 @@ class TelegramPollingIntakeService:
         re.compile(r"예산\s*(?P<price>\d[\d,]*)\s*원"),
     )
     _SUFFIX_PATTERN = re.compile(r"(?:장바구니에\s*)?담아줘[.!?~ ]*$")
+    _REMOVE_SUFFIX_PATTERN = re.compile(r"(?:장바구니에서\s*)?(?:빼줘|빼|제거해줘|제거해|삭제해줘|삭제해|제외해줘|제외해|빼 줘)[.!?~ ]*$")
     _TRAILING_SEPARATOR_PATTERN = re.compile(r"(?:\n|;|,|\s그리고)\s*$")
     _CONSTRAINT_MARKERS = ("옵션", "조건")
     _UNIT_SIZE_PATTERN = re.compile(r"(?P<size>\d+(?:\.\d+)?)\s*(?P<unit>ml|l|kg|g)\b", re.IGNORECASE)
@@ -163,19 +171,30 @@ class TelegramPollingIntakeService:
                 r"^(ㅇㅇ|응|네|예|좋아|좋아요|그래|그거|이걸로|진행해줘|담아줘|넣어줘)(\s*담아줘)?$"
             ),
         ),
+        (
+            "remove",
+            re.compile(
+                r"^.*(?:빼줘|빼|제거해줘|제거해|삭제해줘|삭제해|제외해줘|제외해|빼\s*줘)$"
+            ),
+        ),
     )
+    _FOLLOW_UP_NEXT_KEYWORDS = ("다른거", "다른상품", "다른걸로", "다른거로", "대체상품")
+    _FOLLOW_UP_CONFIRM_KEYWORDS = ("이걸로", "그걸로", "이거로", "그거로")
 
     def __init__(
         self,
         client: TelegramBotApiClient | None = None,
         repository: TelegramIntakeRepository | None = None,
+        request_parser: AzureOpenAIRequestParser | None = None,
     ) -> None:
         self._client = client
         self._repository = repository
+        self._request_parser = request_parser
 
     def parse_message(self, *, user_id: str, chat_id: str, text: str) -> ShoppingRequest:
         stripped_text = text.strip()
-        if self.classify_follow_up_message(stripped_text) is not None:
+        follow_up = self.classify_follow_up_message(stripped_text)
+        if follow_up is not None and follow_up != "remove":
             return ShoppingRequest(
                 user_id=user_id,
                 chat_id=chat_id,
@@ -184,9 +203,38 @@ class TelegramPollingIntakeService:
                 request_id=f"telegram-request-{uuid4()}",
                 received_at=datetime.now(UTC),
             )
+        if self._REMOVE_SUFFIX_PATTERN.search(stripped_text):
+            core = self._REMOVE_SUFFIX_PATTERN.sub("", stripped_text).strip()
+            core = re.sub(r"^(장바구니에서\s*)", "", core).strip()
+            if core:
+                items = [RequestedItem(name=core, quantity=1)]
+                return ShoppingRequest(
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    items=items,
+                    raw_text=stripped_text,
+                    request_id=f"telegram-request-{uuid4()}",
+                    received_at=datetime.now(UTC),
+                )
+        if self._request_parser is not None:
+            try:
+                parsed = self._request_parser.parse_items(
+                    raw_text=stripped_text,
+                    normalized_text=self._normalize_freeform_message_text(text),
+                )
+                if parsed is not None and parsed.items:
+                    return ShoppingRequest(
+                        user_id=user_id,
+                        chat_id=chat_id,
+                        items=parsed.items,
+                        raw_text=text.strip(),
+                        request_id=f"telegram-request-{uuid4()}",
+                        received_at=datetime.now(UTC),
+                    )
+            except Exception:
+                pass
         normalized_text = self._normalize_message_text(text)
-        item_fragments = self._split_item_fragments(normalized_text)
-        items = [self._parse_item_fragment(fragment) for fragment in item_fragments]
+        items = self._parse_items_with_fallback(raw_text=text.strip(), normalized_text=normalized_text)
         return ShoppingRequest(
             user_id=user_id,
             chat_id=chat_id,
@@ -198,6 +246,23 @@ class TelegramPollingIntakeService:
 
     def parse_demo_message(self, *, user_id: str, chat_id: str, text: str) -> ShoppingRequest:
         return self.parse_message(user_id=user_id, chat_id=chat_id, text=text)
+
+    def _parse_items_with_fallback(self, *, raw_text: str, normalized_text: str) -> list[RequestedItem]:
+        if self._request_parser is not None:
+            try:
+                parsed = self._request_parser.parse_items(raw_text=raw_text, normalized_text=normalized_text)
+                if parsed is not None and parsed.items:
+                    return parsed.items
+            except Exception:
+                pass
+        item_fragments = self._split_item_fragments(normalized_text)
+        return [self._parse_item_fragment(fragment) for fragment in item_fragments]
+
+    @staticmethod
+    def _normalize_freeform_message_text(text: str) -> str:
+        stripped = re.sub(r"[^\S\n]+", " ", text.strip())
+        stripped = re.sub(r"\n{2,}", "\n", stripped)
+        return re.sub(r"^(장바구니에\s*)", "", stripped).strip()
 
     def extract_inbound_message(self, update: dict[str, Any]) -> TelegramInboundMessage:
         update_id = int(update.get("update_id", 0))
@@ -432,13 +497,35 @@ class TelegramPollingIntakeService:
         for reply_kind, pattern in cls._FOLLOW_UP_REPLY_PATTERNS:
             if pattern.fullmatch(normalized):
                 return reply_kind
+        if any(keyword in normalized for keyword in cls._FOLLOW_UP_NEXT_KEYWORDS):
+            return "next"
+        if normalized.startswith(("아니", "아까", "흠")) and "다른" in normalized:
+            return "next"
+        if any(keyword in normalized for keyword in cls._FOLLOW_UP_CONFIRM_KEYWORDS):
+            return "confirm"
         return None
 
     def _split_item_fragments(self, text: str) -> list[str]:
-        fragments = [part.strip(" ,") for part in re.split(r"\s*(?:\n|;| 그리고 )\s*", text) if part.strip(" ,")]
+        normalized = text
+        normalized = re.sub(r"\s+(?:그리고|및)\s+", "\n", normalized)
+        normalized = re.sub(r"(?<=[0-9A-Za-z가-힣])(?:이랑|랑|하고)\s+", "\n", normalized)
+        normalized = re.sub(r"(?<=[0-9A-Za-z가-힣])(?:과|와)\s+", "\n", normalized)
+        raw_fragments = [part.strip(" ,") for part in re.split(r"\s*(?:\n|;)\s*", normalized) if part.strip(" ,")]
+        fragments = [self._clean_item_fragment(part, is_multi_item=len(raw_fragments) > 1) for part in raw_fragments]
+        fragments = [fragment for fragment in fragments if fragment]
         if not fragments:
             raise TelegramIntakeError("상품명을 포함해서 요청해주세요.")
         return fragments
+
+    @staticmethod
+    def _clean_item_fragment(fragment: str, *, is_multi_item: bool) -> str:
+        cleaned = fragment.strip(" ,")
+        cleaned = re.sub(r"^(?:추가로|그리고|또|또는)\s+", "", cleaned).strip(" ,")
+        if is_multi_item and re.fullmatch(r"[가-힣A-Za-z0-9\s]{2,}도", cleaned):
+            stem = cleaned[:-1].strip()
+            if stem and stem not in {"포", "도"}:
+                cleaned = stem
+        return cleaned.strip(" ,")
 
     def _parse_item_fragment(self, fragment: str) -> RequestedItem:
         working = fragment.strip()

@@ -6,7 +6,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from coupang_cart_agent.azure_openai import ParsedTelegramRequest
 from coupang_cart_agent.contracts import IntakeMode
+from coupang_cart_agent.contracts import RequestedItem
 from coupang_cart_agent.telegram_intake import (
     TelegramBotApiClient,
     TelegramIntakeError,
@@ -40,6 +42,19 @@ class _StubTelegramClient:
     def send_message(self, *, chat_id: str, text: str) -> dict[str, object]:
         self.sent_messages.append((chat_id, text))
         return {"ok": True}
+
+
+class _StubRequestParser:
+    def __init__(self, items: list[RequestedItem] | None = None, *, should_fail: bool = False) -> None:
+        self._items = items or []
+        self._should_fail = should_fail
+        self.calls: list[tuple[str, str]] = []
+
+    def parse_items(self, *, raw_text: str, normalized_text: str) -> ParsedTelegramRequest | None:
+        self.calls.append((raw_text, normalized_text))
+        if self._should_fail:
+            raise RuntimeError("parser failed")
+        return ParsedTelegramRequest(items=list(self._items))
 
 
 class TelegramIntakeTests(unittest.TestCase):
@@ -90,6 +105,61 @@ class TelegramIntakeTests(unittest.TestCase):
         self.assertEqual(request.items[1].quantity, 1)
         self.assertEqual(request.items[1].constraints, ["무가당"])
 
+    def test_parse_message_supports_conversational_multi_item_connectors(self) -> None:
+        request = self.service.parse_message(
+            user_id="telegram:7",
+            chat_id="chat-7",
+            text="추가로 의자랑 쇼파도 담아줘",
+        )
+
+        self.assertEqual(len(request.items), 2)
+        self.assertEqual(request.items[0].name, "의자")
+        self.assertEqual(request.items[1].name, "쇼파")
+        self.assertEqual(request.items[0].quantity, 1)
+        self.assertEqual(request.items[1].quantity, 1)
+
+    def test_parse_message_prefers_llm_structured_items_when_available(self) -> None:
+        parser = _StubRequestParser(
+            items=[
+                RequestedItem(name="의자", quantity=1),
+                RequestedItem(name="쇼파", quantity=1),
+            ]
+        )
+        service = TelegramPollingIntakeService(request_parser=parser)
+
+        request = service.parse_message(
+            user_id="telegram:8",
+            chat_id="chat-8",
+            text="추가로 의자랑 쇼파도 담아줘",
+        )
+
+        self.assertEqual([item.name for item in request.items], ["의자", "쇼파"])
+        self.assertEqual(len(parser.calls), 1)
+
+    def test_parse_message_falls_back_to_rule_parser_when_llm_parser_fails(self) -> None:
+        service = TelegramPollingIntakeService(request_parser=_StubRequestParser(should_fail=True))
+
+        request = service.parse_message(
+            user_id="telegram:9",
+            chat_id="chat-9",
+            text="추가로 의자랑 쇼파도 담아줘",
+        )
+
+        self.assertEqual([item.name for item in request.items], ["의자", "쇼파"])
+
+    def test_parse_message_accepts_freeform_request_without_suffix_when_llm_parser_is_available(self) -> None:
+        service = TelegramPollingIntakeService(
+            request_parser=_StubRequestParser(items=[RequestedItem(name="쇼파", quantity=1)])
+        )
+
+        request = service.parse_message(
+            user_id="telegram:10",
+            chat_id="chat-10",
+            text="쇼파 다른 모델 추천해줘",
+        )
+
+        self.assertEqual([item.name for item in request.items], ["쇼파"])
+
     def test_parse_message_requires_damajwo_suffix(self) -> None:
         with self.assertRaises(TelegramIntakeError) as context:
             self.service.parse_message(
@@ -119,6 +189,16 @@ class TelegramIntakeTests(unittest.TestCase):
             )
 
         self.assertIn("연결어", str(context.exception))
+
+    def test_classify_follow_up_message_supports_conversational_next_requests(self) -> None:
+        self.assertEqual(
+            TelegramPollingIntakeService.classify_follow_up_message("흠 다른 상품 담아줘"),
+            "next",
+        )
+        self.assertEqual(
+            TelegramPollingIntakeService.classify_follow_up_message("아니 아까 쇼파 다른 걸로"),
+            "next",
+        )
 
     def test_handle_update_converts_telegram_payload_into_request(self) -> None:
         result = self.service.handle_update(
@@ -383,6 +463,27 @@ class TelegramIntakeTests(unittest.TestCase):
         self.assertEqual(results[1].request.items, [])
         self.assertEqual(results[1].envelope.metadata["follow_up_reply"], "confirm")
         self.assertEqual(client.sent_messages, [])
+
+
+class TelegramRemovePatternTests(unittest.TestCase):
+    """Test that remove patterns are correctly classified by the intake service."""
+
+    def test_parse_message_recognizes_remove_suffix(self) -> None:
+        service = TelegramPollingIntakeService()
+        for text in ["양파 빼줘", "양파 제거해줘", "양파 삭제해줘", "양파 장바구니에서 빼줘", "양파 제외해줘"]:
+            request = service.parse_message(user_id="u1", chat_id="c1", text=text)
+            self.assertTrue(len(request.items) >= 1, f"Expected items for '{text}', got none")
+            self.assertIn("양파", request.items[0].name, f"Expected '양파' in item name for '{text}'")
+
+    def test_classify_follow_up_message_remove(self) -> None:
+        for text in ["빼줘", "제거해줘", "삭제해줘", "제외해줘"]:
+            result = TelegramPollingIntakeService.classify_follow_up_message(text)
+            self.assertEqual(result, "remove", f"Expected 'remove' for '{text}', got '{result}'")
+
+    def test_classify_follow_up_message_non_remove(self) -> None:
+        for text in ["ㅇㅇ 담아줘", "취소", "다른 거 보여줘"]:
+            result = TelegramPollingIntakeService.classify_follow_up_message(text)
+            self.assertNotEqual(result, "remove", f"'{text}' should not be classified as remove")
 
 
 if __name__ == "__main__":

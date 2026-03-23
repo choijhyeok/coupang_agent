@@ -4,11 +4,16 @@ import unittest
 from datetime import UTC, datetime
 
 from coupang_cart_agent.azure_openai import AzureOpenAIPlanner
+from coupang_cart_agent.cart_verification import DeterministicCartVerifier
+from coupang_cart_agent.candidate_sources import _candidates_from_observation
 from coupang_cart_agent.contracts import (
+    BrowserObservation,
     CartAddResult,
     CartAddStage,
     CartAddFailureReason,
     IntakeMode,
+    ObservedCartItem,
+    ObservedProduct,
     ProductCandidate,
     RequestSession,
     RequestedItem,
@@ -72,7 +77,7 @@ class LiveWorkflowVerificationTests(unittest.TestCase):
                         cart_item_id=None,
                         selected_product=selections[0],
                         stage=CartAddStage.VERIFICATION,
-                        message="Cart verification evidence was insufficient to confirm the requested item in cart.",
+                        message="장바구니에 요청한 상품이 담겼는지 확정할 증거가 부족합니다.",
                         failure_reason=CartAddFailureReason.MANUAL_REVIEW_REQUIRED,
                         evidence={
                             "verification": {
@@ -125,14 +130,92 @@ class LiveWorkflowVerificationTests(unittest.TestCase):
         result = workflow.run_envelope(self._envelope("ㅇㅇ 담아줘"))
 
         self.assertTrue(first_result.success)
-        self.assertFalse(result.success)
+        self.assertTrue(result.success)
         self.assertEqual(result.failed_stage, "verification")
-        self.assertEqual(result.cart_results[0].failure_reason, CartAddFailureReason.MANUAL_REVIEW_REQUIRED)
-        self.assertFalse(store.runs[-1]["notification_payload"]["success"])
-        self.assertIn("manual_review_required", delivered_messages[-1][1])
-        self.assertTrue(
-            store.runs[-1]["cart_results"][0]["evidence"]["verification"]["cart_observation"]["has_screenshot"]
+        self.assertEqual(store.runs[-1]["failed_stage"], "verification")
+        self.assertEqual(store.runs[-1]["conversation_status"], "awaiting_user_confirmation")
+        self.assertTrue(store.runs[-1]["pending_proposal"])
+        self.assertTrue(store.runs[-1]["notification_payload"]["success"])
+
+    def test_deterministic_verifier_treats_pack_count_as_package_not_order_quantity(self) -> None:
+        verifier = DeterministicCartVerifier()
+        selection = SelectedProduct(
+            request_item_name="새우깡",
+            candidate=ProductCandidate(
+                product_id="shrimp-cracker",
+                name="새우깡, 90g, 5개",
+                price_krw=5800,
+                rating=5.0,
+                review_count=1000,
+                product_url="https://www.coupang.com/vp/products/shrimp-cracker",
+            ),
+            quantity=1,
+            selection_reason="test",
+            score=90.0,
         )
+        observation = BrowserObservation(
+            step_index=0,
+            url="https://cart.coupang.com/cartView.pang",
+            title="쿠팡 장바구니",
+            page_kind="browse",
+            body_text_excerpt="새우깡 옵션: 90g, 5개",
+            cart_items=[
+                ObservedCartItem(
+                    name="새우깡",
+                    quantity=None,
+                    quantity_text=None,
+                    option_summary="옵션: 90g, 5개",
+                    package_summary="90g, 5개",
+                )
+            ],
+        )
+
+        result = verifier.verify(
+            selection=selection,
+            observation=observation,
+            cart_count_before=0,
+            cart_count_after=1,
+        )
+
+        self.assertTrue(result.success)
+
+    def test_live_candidate_discovery_prefers_non_rocket_fresh_products(self) -> None:
+        observation = BrowserObservation(
+            step_index=1,
+            url="https://www.coupang.com/np/search?q=%EC%9A%B0%EC%9C%A0",
+            title="검색 결과",
+            page_kind="search_results",
+            body_text_excerpt="우유 검색 결과",
+            observed_products=[
+                ObservedProduct(
+                    name="곰곰 신선한 1A 우유, 900ml, 1개",
+                    href="https://www.coupang.com/vp/products/MILK-FRESH",
+                    image_url="https://images.example.com/milk-fresh.jpg",
+                    price_text="2,480원",
+                    rating_text="5.0",
+                    review_count_text="446,404",
+                    badges=["로켓프레시"],
+                ),
+                ObservedProduct(
+                    name="서울우유 1L",
+                    href="https://www.coupang.com/vp/products/MILK-NORMAL",
+                    image_url="https://images.example.com/milk-normal.jpg",
+                    price_text="3,100원",
+                    rating_text="4.8",
+                    review_count_text="12,340",
+                    badges=["Rocket"],
+                ),
+            ],
+        )
+
+        candidates = _candidates_from_observation(
+            observation=observation,
+            fallback_query="우유",
+            max_candidates=5,
+        )
+
+        self.assertEqual(candidates[0].product_id, "MILK-NORMAL")
+        self.assertEqual(candidates[0].image_url, "https://images.example.com/milk-normal.jpg")
 
 
 if __name__ == "__main__":

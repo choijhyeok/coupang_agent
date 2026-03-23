@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import html
+import re
 import sqlite3
 from dataclasses import asdict
 from datetime import UTC, datetime
 from time import sleep
 from typing import Any, Callable, Protocol
 
-from .contracts import CartAddResult, NotificationPayload, PriorPurchaseRecord
+from .contracts import CartAddResult, CartRemoveResult, NotificationPayload, PriorPurchaseRecord
 from .telegram_intake import TelegramBotApiClient
 
 MAX_NOTIFICATION_LENGTH = 500
@@ -20,7 +22,7 @@ class NotificationDeliveryError(RuntimeError):
 class NotificationTextSender(Protocol):
     """Transport seam for sending a formatted notification string."""
 
-    def send_message(self, *, chat_id: str, text: str) -> object: ...
+    def send_message(self, *, chat_id: str, text: str, parse_mode: str | None = None) -> object: ...
 
     def send_photo(
         self,
@@ -28,6 +30,7 @@ class NotificationTextSender(Protocol):
         chat_id: str,
         photo: str,
         caption: str | None = None,
+        parse_mode: str | None = None,
     ) -> object: ...
 
 
@@ -42,6 +45,10 @@ class NotificationFormatter:
             message = _format_proposal_message(payload)
         elif payload.kind == "cancelled":
             message = _format_cancelled_message(payload)
+        elif payload.kind == "remove_result":
+            message = _format_remove_message(payload)
+        elif payload.kind == "price_assessment":
+            message = _format_price_assessment_message(payload)
         else:
             message = (
                 _format_success_message(payload, max_length=self._max_length)
@@ -50,6 +57,10 @@ class NotificationFormatter:
             )
         return truncate_message(message, limit=self._max_length)
 
+    @staticmethod
+    def parse_mode() -> str:
+        return "HTML"
+
 
 class TelegramSendMessageSender:
     """Adapter that delivers messages through Telegram Bot API sendMessage."""
@@ -57,8 +68,8 @@ class TelegramSendMessageSender:
     def __init__(self, *, client: TelegramBotApiClient) -> None:
         self._client = client
 
-    def send_message(self, *, chat_id: str, text: str) -> dict[str, Any]:
-        return self._client.send_message(chat_id=chat_id, text=text)
+    def send_message(self, *, chat_id: str, text: str, parse_mode: str | None = None) -> dict[str, Any]:
+        return self._client.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode)
 
     def send_photo(
         self,
@@ -66,8 +77,9 @@ class TelegramSendMessageSender:
         chat_id: str,
         photo: str,
         caption: str | None = None,
+        parse_mode: str | None = None,
     ) -> dict[str, Any]:
-        return self._client.send_photo(chat_id=chat_id, photo=photo, caption=caption)
+        return self._client.send_photo(chat_id=chat_id, photo=photo, caption=caption, parse_mode=parse_mode)
 
 
 class SQLiteNotificationContextStore:
@@ -211,15 +223,21 @@ def build_proposal_notification_payload(
     candidate: dict[str, object],
     alternatives: list[dict[str, object]] | None = None,
     image_url: str | None = None,
+    price_assessments: list[dict[str, object]] | None = None,
 ) -> NotificationPayload:
     details: dict[str, object] = {
         "candidate": dict(candidate),
         "alternatives": list(alternatives or []),
     }
+    if price_assessments:
+        details["price_assessments"] = list(price_assessments)
     if image_url:
         details["photo"] = {
             "url": image_url,
-            "caption": _build_proposal_caption(summary=summary, candidate=candidate),
+            "caption": _build_proposal_caption(
+                summary=summary, candidate=candidate,
+                price_assessments=price_assessments,
+            ),
         }
     return NotificationPayload(
         chat_id=chat_id,
@@ -227,6 +245,38 @@ def build_proposal_notification_payload(
         stage="proposal_pending",
         summary=summary,
         kind="proposal",
+        details=details,
+    )
+
+
+def build_remove_notification_payload(
+    *,
+    chat_id: str,
+    remove_results: list[CartRemoveResult],
+) -> NotificationPayload:
+    if not remove_results:
+        raise ValueError("remove_results must not be empty")
+    successes = [r for r in remove_results if r.success]
+    failures = [r for r in remove_results if not r.success]
+    all_success = len(failures) == 0
+    if all_success:
+        names = ", ".join(r.product_name for r in successes)
+        summary = f"장바구니에서 {names}을(를) 제거했습니다."
+    else:
+        first_fail = failures[0]
+        summary = f"장바구니에서 {first_fail.product_name} 제거에 실패했습니다."
+        if first_fail.message:
+            summary += f" ({first_fail.message})"
+    details: dict[str, object] = {
+        "removed_products": [asdict(r) for r in successes],
+        "failed_products": [asdict(r) for r in failures],
+    }
+    return NotificationPayload(
+        chat_id=chat_id,
+        success=all_success,
+        stage="cart_remove",
+        summary=summary,
+        kind="remove_result",
         details=details,
     )
 
@@ -242,6 +292,32 @@ def build_cancelled_notification_payload(
         stage="cancelled",
         summary=summary,
         kind="cancelled",
+    )
+
+
+def build_price_assessment_notification_payload(
+    *,
+    chat_id: str,
+    assessments: list[dict[str, object]],
+) -> NotificationPayload:
+    if not assessments:
+        raise ValueError("assessments must not be empty")
+    verdicts = [str(a.get("verdict", "")) for a in assessments]
+    has_buy_now = "buy_now" in verdicts
+    has_wait = "wait" in verdicts
+    if has_buy_now:
+        summary = "가격 분석 결과: 지금 사는 게 이득인 상품이 있습니다!"
+    elif has_wait:
+        summary = "가격 분석 결과: 가격이 더 내릴 수 있는 상품이 있습니다."
+    else:
+        summary = "가격 분석 결과: 현재 적당한 가격대입니다."
+    return NotificationPayload(
+        chat_id=chat_id,
+        success=True,
+        stage="price_assessment",
+        summary=summary,
+        kind="price_assessment",
+        details={"assessments": list(assessments)},
     )
 
 
@@ -280,10 +356,11 @@ class RetryingNotificationService:
 
     def send(self, payload: NotificationPayload) -> None:
         message = self._formatter.format(payload)
+        parse_mode = self._formatter.parse_mode()
         attempt = 1
         while True:
             try:
-                self._dispatch(payload, message)
+                self._dispatch(payload, message, parse_mode=parse_mode)
                 return
             except self._retryable_exceptions as exc:
                 if attempt >= self._max_attempts:
@@ -294,8 +371,9 @@ class RetryingNotificationService:
                 if self._sleep_seconds > 0:
                     self._sleep_func(self._sleep_seconds)
 
-    def _dispatch(self, payload: NotificationPayload, message: str) -> object | None:
+    def _dispatch(self, payload: NotificationPayload, message: str, *, parse_mode: str | None) -> object | None:
         photo_payload = payload.details.get("photo")
+        sent_photo = False
         if hasattr(self._sender, "send_photo") and isinstance(photo_payload, dict):
             photo_url = str(photo_payload.get("url", "")).strip()
             caption = photo_payload.get("caption")
@@ -304,9 +382,13 @@ class RetryingNotificationService:
                     chat_id=payload.chat_id,
                     photo=photo_url,
                     caption=None if caption in (None, "") else str(caption),
+                    parse_mode=parse_mode,
                 )
+                sent_photo = True
+        if payload.kind == "proposal" and sent_photo:
+            return sent_photo
         if hasattr(self._sender, "send_message"):
-            return self._sender.send_message(chat_id=payload.chat_id, text=message)
+            return self._sender.send_message(chat_id=payload.chat_id, text=message, parse_mode=parse_mode)
         return self._sender(payload.chat_id, message)
 
 
@@ -366,15 +448,15 @@ def _format_success_message(payload: NotificationPayload, *, max_length: int) ->
                 item_limit=2,
                 name_limit=name_limit,
             )
-            lines = ["장바구니 담기를 완료했습니다."]
+            lines = ["<b>장바구니 담기를 완료했습니다.</b>"]
             lines.extend(product_lines)
             lines.extend(context_lines)
-            lines.append(f"요약: {payload.summary}")
+            lines.append(f"<b>요약</b>: {_escape(payload.summary)}")
             message = "\n".join(lines)
             if len(message) <= max_length:
                 return message
 
-    lines = ["장바구니 담기를 완료했습니다.", f"요약: {payload.summary}"]
+    lines = ["<b>장바구니 담기를 완료했습니다.</b>", f"<b>요약</b>: {_escape(payload.summary)}"]
     return "\n".join(lines)
 
 
@@ -392,11 +474,11 @@ def _build_product_lines(
         name = truncate_text(str(product.get("name", "상품 정보 없음")), limit=name_limit)
         price = format_price(int(product.get("price_krw", 0)))
         quantity = int(product.get("quantity", 1))
-        product_lines.append(f"- {name} / {price}원 / {quantity}개")
+        product_lines.append(f"• <b>{_escape(name)}</b>\n  {_escape(price)}원 · {_escape(str(quantity))}개")
 
     remaining = len(products) - len(display_products)
     if remaining > 0:
-        product_lines.append(f"- 외 {remaining}건")
+        product_lines.append(f"• 외 {remaining}건")
     return product_lines
 
 
@@ -421,7 +503,7 @@ def _build_prior_purchase_lines(
             continue
         name = truncate_text(str(purchase.get("product_name", "이전 구매 상품")), limit=name_limit)
         count = max(1, int(purchase.get("purchase_count", 1)))
-        matched_lines.append(f"재구매 참고: {name} / 이전 구매 {count}회")
+        matched_lines.append(f"• <i>재구매 참고</i>: {_escape(name)} · 이전 구매 {count}회")
         if len(matched_lines) >= item_limit:
             break
     return matched_lines
@@ -432,30 +514,198 @@ def _format_proposal_message(payload: NotificationPayload) -> str:
     if not isinstance(candidate, dict):
         candidate = {}
     lines = [
-        "추천 상품을 찾았습니다.",
-        f"상품: {truncate_text(str(candidate.get('name', '상품 정보 없음')), limit=80)}",
+        "<b>추천 상품을 찾았습니다.</b>",
+        f"<b>상품</b>: {_escape(truncate_text(str(candidate.get('name', '상품 정보 없음')), limit=80))}",
     ]
     option_summary = truncate_text(str(candidate.get("option_summary", "")).strip(), limit=40)
-    if option_summary:
-        lines.append(f"옵션: {option_summary}")
-    lines.append(f"가격: {format_price(int(candidate.get('price_krw', 0)))}원")
-    reason = truncate_text(str(candidate.get("selection_reason", payload.summary)), limit=180)
-    lines.append(f"추천 이유: {reason}")
-    lines.append("이대로 진행하려면 `ㅇㅇ 담아줘`, 다른 추천은 `다른 거 보여줘`, 취소는 `취소`라고 답해주세요.")
+    if option_summary and _normalized_option_summary(option_summary) != _normalized_option_summary(
+        str(candidate.get("name", ""))
+    ):
+        lines.append(f"<b>옵션</b>: {_escape(option_summary)}")
+    lines.append(f"<b>가격</b>: {_escape(format_price(int(candidate.get('price_krw', 0))))}원")
+    reason = str(candidate.get("selection_reason", payload.summary)).strip()
+    reason = " ".join(reason.split())
+    lines.append(f"<b>추천 이유</b>: {_escape(reason)}")
+
+    # Include price comparison table from multiple sources
+    price_assessments = payload.details.get("price_assessments", [])
+    if isinstance(price_assessments, list) and price_assessments:
+        lines.append("")
+        lines.append("📊 <b>가격 비교</b>")
+        # Coupang price from candidate
+        coupang_price = int(candidate.get("price_krw", 0))
+        if coupang_price > 0:
+            lines.append(f"  <b>쿠팡가격</b>: {_escape(format_price(coupang_price))}원")
+
+        # Source-specific price rows
+        _SOURCE_LABELS = {"danawa": "다나와", "lowchart": "로우차트", "geniealert": "지니얼럿"}
+        for assessment in price_assessments:
+            if not isinstance(assessment, dict):
+                continue
+            source = str(assessment.get("source", ""))
+            label = _SOURCE_LABELS.get(source, source)
+            lowest = int(assessment.get("lowest_price_krw", 0))
+            avg = int(assessment.get("average_price_krw", 0))
+            current_src = int(assessment.get("current_price_krw", 0))
+            parts = []
+            if current_src > 0:
+                parts.append(f"현재 {_escape(format_price(current_src))}원")
+            if lowest > 0 and lowest != current_src:
+                parts.append(f"최저 {_escape(format_price(lowest))}원")
+            if avg > 0 and avg != current_src and avg != lowest:
+                parts.append(f"평균 {_escape(format_price(avg))}원")
+            if parts:
+                lines.append(f"  <b>{_escape(label)}</b>: {' · '.join(parts)}")
+
+        # Unified verdict from the best-confidence assessment
+        best = max(price_assessments, key=lambda a: float(a.get("discount_pct_vs_avg", 0)) if isinstance(a, dict) else 0)
+        if isinstance(best, dict):
+            verdict = str(best.get("verdict", ""))
+            verdict_label = _VERDICT_LABELS.get(verdict, "")
+            if verdict_label:
+                lines.append(f"  <b>판정</b>: {verdict_label}")
+                verdict_reason = str(best.get("verdict_reason", ""))
+                if verdict_reason:
+                    lines.append(f"  <i>{_escape(verdict_reason)}</i>")
+
+    lines.append("")
+    lines.append(
+        "진행: <code>ㅇㅇ 담아줘</code>\n"
+        "다른 추천: <code>다른 거 보여줘</code>\n"
+        "취소: <code>취소</code>"
+    )
+    return "\n".join(lines)
+
+
+def _format_remove_message(payload: NotificationPayload) -> str:
+    removed = payload.details.get("removed_products", [])
+    failed = payload.details.get("failed_products", [])
+    if not isinstance(removed, list):
+        removed = []
+    if not isinstance(failed, list):
+        failed = []
+    if payload.success:
+        lines = ["<b>장바구니에서 상품을 제거했습니다.</b>"]
+        for item in removed:
+            if isinstance(item, dict):
+                name = truncate_text(str(item.get("product_name", "상품")), limit=40)
+                lines.append(f"• {_escape(name)}")
+        lines.append(f"<b>요약</b>: {_escape(payload.summary)}")
+    else:
+        lines = ["<b>장바구니 상품 제거에 실패했습니다.</b>"]
+        for item in failed:
+            if isinstance(item, dict):
+                name = truncate_text(str(item.get("product_name", "상품")), limit=40)
+                msg = str(item.get("message", ""))
+                line = f"• {_escape(name)}"
+                if msg:
+                    line += f" — {_escape(truncate_text(msg, limit=80))}"
+                lines.append(line)
+        lines.append(f"<b>원인</b>: {_escape(payload.summary)}")
     return "\n".join(lines)
 
 
 def _format_cancelled_message(payload: NotificationPayload) -> str:
-    return payload.summary
+    return _escape(payload.summary)
 
 
-def _build_proposal_caption(*, summary: str, candidate: dict[str, object]) -> str:
-    parts = [truncate_text(str(candidate.get("name", "상품 정보 없음")), limit=80)]
+_VERDICT_LABELS = {
+    "buy_now": "🟢 지금 사는 게 이득",
+    "reasonable": "🟡 적당한 가격",
+    "wait": "🔴 기다리는 게 나음",
+}
+
+_VERDICT_EMOJIS = {
+    "buy_now": "🟢",
+    "reasonable": "🟡",
+    "wait": "🔴",
+}
+
+
+def _format_price_assessment_message(payload: NotificationPayload) -> str:
+    assessments = payload.details.get("assessments", [])
+    if not isinstance(assessments, list):
+        assessments = []
+    lines = ["<b>📊 가격 분석 리포트</b>"]
+    for assessment in assessments:
+        if not isinstance(assessment, dict):
+            continue
+        name = truncate_text(str(assessment.get("product_name", "상품")), limit=40)
+        verdict = str(assessment.get("verdict", "reasonable"))
+        verdict_label = _VERDICT_LABELS.get(verdict, verdict)
+        current = int(assessment.get("current_price_krw", 0))
+        avg = int(assessment.get("average_price_krw", 0))
+        lowest = int(assessment.get("lowest_price_krw", 0))
+        recent_low = assessment.get("recent_low_30d_krw")
+        reason = truncate_text(str(assessment.get("verdict_reason", "")), limit=120)
+        source = str(assessment.get("source", ""))
+
+        lines.append(f"\n<b>{_escape(name)}</b>")
+        lines.append(f"  판정: {verdict_label}")
+        lines.append(f"  현재가: {_escape(format_price(current))}원")
+        lines.append(f"  평균가: {_escape(format_price(avg))}원 · 최저가: {_escape(format_price(lowest))}원")
+        if recent_low is not None:
+            lines.append(f"  최근 30일 최저: {_escape(format_price(int(recent_low)))}원")
+        discount = assessment.get("discount_pct_vs_avg")
+        if discount is not None and float(discount) != 0:
+            direction = "저렴" if float(discount) > 0 else "비쌈"
+            lines.append(f"  평균 대비: {abs(float(discount)):.1f}% {direction}")
+        lines.append(f"  <i>{_escape(reason)}</i>")
+        if source:
+            lines.append(f"  출처: {_escape(source)}")
+    return "\n".join(lines)
+
+
+def _build_proposal_caption(
+    *, summary: str, candidate: dict[str, object],
+    price_assessments: list[dict[str, object]] | None = None,
+) -> str:
+    parts = [f"<b>{_escape(truncate_text(str(candidate.get('name', '상품 정보 없음')), limit=80))}</b>"]
     option_summary = truncate_text(str(candidate.get("option_summary", "")).strip(), limit=32)
-    if option_summary:
-        parts.append(option_summary)
-    parts.append(f"{format_price(int(candidate.get('price_krw', 0)))}원")
-    parts.append(truncate_text(summary, limit=120))
+    if option_summary and _normalized_option_summary(option_summary) != _normalized_option_summary(
+        str(candidate.get("name", ""))
+    ):
+        parts.append(_escape(option_summary))
+    parts.append(f"<b>{_escape(format_price(int(candidate.get('price_krw', 0))))}원</b>")
+    summary_text = str(summary).strip()
+    if "담기를 완료했습니다." in summary_text:
+        reason = summary_text
+    else:
+        reason = str(candidate.get("selection_reason", summary)).strip()
+    reason = " ".join(reason.split())
+    parts.append(_escape(reason))
+
+    # Price comparison inline (compact for 1024-char caption limit)
+    if price_assessments:
+        _SRC = {"danawa": "다나와", "lowchart": "로우차트", "geniealert": "지니얼럿"}
+        price_lines: list[str] = []
+        coupang_price = int(candidate.get("price_krw", 0))
+        if coupang_price > 0:
+            price_lines.append(f"쿠팡 {format_price(coupang_price)}원")
+        for a in price_assessments:
+            if not isinstance(a, dict):
+                continue
+            src = _SRC.get(str(a.get("source", "")), str(a.get("source", "")))
+            cur = int(a.get("current_price_krw", 0))
+            low = int(a.get("lowest_price_krw", 0))
+            if cur > 0:
+                txt = f"{src} {format_price(cur)}원"
+                if low > 0 and low != cur:
+                    txt += f"(최저 {format_price(low)}원)"
+                price_lines.append(txt)
+        if price_lines:
+            parts.append("\n📊 " + " · ".join(price_lines))
+        best = max(price_assessments, key=lambda x: float(x.get("discount_pct_vs_avg", 0)) if isinstance(x, dict) else 0)
+        if isinstance(best, dict):
+            vl = _VERDICT_LABELS.get(str(best.get("verdict", "")), "")
+            if vl:
+                parts.append(vl)
+
+    parts.append(
+        "\n진행: ㅇㅇ 담아줘\n"
+        "다른 추천: 다른 거 보여줘\n"
+        "취소: 취소"
+    )
     return "\n".join(part for part in parts if part)
 
 
@@ -463,12 +713,12 @@ def _format_failure_message(payload: NotificationPayload) -> str:
     reason = str(payload.details.get("failure_reason", payload.summary))
     detail = payload.details.get("failure_detail")
     lines = [
-        "장바구니 담기에 실패했습니다.",
-        f"단계: {payload.stage}",
-        f"원인: {truncate_text(reason, limit=180)}",
+        "<b>장바구니 담기에 실패했습니다.</b>",
+        f"<b>단계</b>: <code>{_escape(payload.stage)}</code>",
+        f"<b>원인</b>: {_escape(truncate_text(reason, limit=180))}",
     ]
     if detail:
-        lines.append(f"상세: {truncate_text(str(detail), limit=160)}")
+        lines.append(f"<b>상세</b>: {_escape(truncate_text(str(detail), limit=160))}")
     return "\n".join(lines)
 
 
@@ -489,6 +739,14 @@ def truncate_text(text: str, *, limit: int) -> str:
 
 def format_price(value: int) -> str:
     return f"{value:,}"
+
+
+def _normalized_option_summary(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def _escape(text: str) -> str:
+    return html.escape(text, quote=True)
 
 
 def normalize_snapshot_items(items: list[dict[str, object]] | None) -> list[dict[str, object]]:

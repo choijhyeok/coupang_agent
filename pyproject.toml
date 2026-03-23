@@ -5,6 +5,7 @@ description = "Shared foundation and contracts for the Coupang cart agent"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "httpx>=0.28.0",
     "langgraph>=1.1.0",
     "langgraph-checkpoint-postgres>=3.0.4",
     "playwright>=1.58.0",

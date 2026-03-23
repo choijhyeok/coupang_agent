@@ -1149,6 +1149,7 @@ def _selection_from_observation(
         rating=_rating_from_text(product.rating_text),
         review_count=_review_count_from_text(product.review_count_text),
         product_url=product.href or observation.url,
+        image_url=product.image_url,
         vendor="Coupang",
         badges=list(product.badges),
     )
@@ -1174,6 +1175,7 @@ def _pick_observed_product(
         return ObservedProduct(
             name=str(selected_hint.get("name") or fallback_name),
             href=_optional_text(selected_hint.get("href")) or observation.url,
+            image_url=_optional_text(selected_hint.get("image_url")),
             price_text=_optional_text(selected_hint.get("price_text")),
             rating_text=_optional_text(selected_hint.get("rating_text")),
             review_count_text=_optional_text(selected_hint.get("review_count_text")),

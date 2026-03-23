@@ -182,6 +182,7 @@ class LiveBrowserAgentTests(unittest.TestCase):
                         ObservedProduct(
                             name="코카콜라 제로 355ml x 24",
                             href="https://www.coupang.com/vp/products/CP-1001",
+                            image_url="https://images.example.com/coke-zero.jpg",
                             price_text="16,900원",
                             rating_text="4.8",
                             review_count_text="12,431",
@@ -199,6 +200,7 @@ class LiveBrowserAgentTests(unittest.TestCase):
                     selected_product_hint={
                         "name": "코카콜라 제로 355ml x 24",
                         "href": "https://www.coupang.com/vp/products/CP-1001",
+                        "image_url": "https://images.example.com/coke-zero.jpg",
                         "price_text": "16,900원",
                         "rating_text": "4.8",
                         "review_count_text": "12,431",
@@ -224,6 +226,7 @@ class LiveBrowserAgentTests(unittest.TestCase):
         self.assertEqual(driver.executed_actions, ["search", "click", "add_to_cart"])
         self.assertTrue(result.cart_results[0].success)
         self.assertEqual(result.selections[0].candidate.product_id, "CP-1001")
+        self.assertEqual(result.selections[0].candidate.image_url, "https://images.example.com/coke-zero.jpg")
         self.assertEqual(result.cart_results[0].cart_count_before, 0)
         self.assertEqual(result.cart_results[0].cart_count_after, 1)
         self.assertEqual(driver._snapshot_calls, 0)

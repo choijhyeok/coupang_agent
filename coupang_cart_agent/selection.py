@@ -109,11 +109,11 @@ def summarize_selection_reason(
 ) -> str:
     price_ratio = candidate.price_krw / median_price_krw if median_price_krw else 1.0
     if price_ratio <= 0.95:
-        price_note = "below the candidate median price"
+        price_note = "후보 중간가보다 저렴함"
     elif price_ratio >= 1.10:
-        price_note = "above the candidate median price"
+        price_note = "후보 중간가보다 비쌈"
     else:
-        price_note = "near the candidate median price"
+        price_note = "후보 중간가와 비슷함"
 
     context_fragments: list[str] = []
     if context is not None:
@@ -122,27 +122,27 @@ def summarize_selection_reason(
             None,
         )
         if prior_purchase is not None:
-            context_fragments.append(f"repeat purchase signal x{prior_purchase.purchase_count}")
+            context_fragments.append(f"이전 구매 이력 {prior_purchase.purchase_count}회")
 
         for signal in context.recent_session_signals:
             if signal.product_id != candidate.product_id:
                 continue
             normalized_signal = signal.signal.strip().lower()
             if normalized_signal in {"preferred", "repeat", "liked"}:
-                context_fragments.append(f"recent session marked as {normalized_signal}")
+                context_fragments.append("최근 대화에서 선호 신호가 있었음")
             elif normalized_signal in {"avoid", "rejected", "disliked"}:
-                context_fragments.append(f"recent session penalty for {normalized_signal}")
+                context_fragments.append("최근 대화에서 비선호 신호가 있었음")
 
     summary = (
-        f"Selected for balanced quality: rating {candidate.rating:.1f}/5, "
-        f"{candidate.review_count:,} reviews, {candidate.price_krw:,} KRW "
-        f"({price_note}), score {score:.2f}."
+        f"평점 {candidate.rating:.1f}/5, 리뷰 {candidate.review_count:,}개, "
+        f"가격 {candidate.price_krw:,}원을 기준으로 품질과 가격의 균형이 좋아 추천했습니다 "
+        f"({price_note}, 점수 {score:.2f})."
     )
     explicit_constraints = _format_explicit_constraints(requested_item)
     if explicit_constraints:
-        summary += f" Matched explicit request constraints: {explicit_constraints}."
+        summary += f" 요청 조건 반영: {explicit_constraints}."
     if context_fragments:
-        summary += " Context: " + ", ".join(context_fragments) + "."
+        summary += " 참고 맥락: " + ", ".join(context_fragments) + "."
     return summary
 
 

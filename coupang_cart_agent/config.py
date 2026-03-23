@@ -32,6 +32,7 @@ class AppConfig:
     coupang_search_endpoint: str | None = None
     app_host: str = "127.0.0.1"
     app_port: int = 8080
+    price_monitor_interval_seconds: float = 180.0
 
 
 def load_telegram_bot_token(
@@ -116,4 +117,5 @@ def load_config(
         coupang_search_endpoint=source.get("COUPANG_SEARCH_ENDPOINT") or None,
         app_host=source.get("APP_HOST", "127.0.0.1"),
         app_port=int(source.get("APP_PORT", "8080")),
+        price_monitor_interval_seconds=float(source.get("PRICE_MONITOR_INTERVAL_SECONDS", "180")),
     )

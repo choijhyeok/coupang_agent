@@ -7,6 +7,9 @@ import unittest
 from coupang_cart_agent.contracts import (
     CartAddResult,
     CartAddStage,
+    CartRemoveFailureReason,
+    CartRemoveResult,
+    CartRemoveStage,
     PriorPurchaseRecord,
     ProductCandidate,
     SelectedProduct,
@@ -20,6 +23,7 @@ from coupang_cart_agent.notifications import (
     build_cancelled_notification_payload,
     build_failure_notification_payload,
     build_proposal_notification_payload,
+    build_remove_notification_payload,
     build_success_notification_payload,
     format_notification_message,
 )
@@ -81,9 +85,10 @@ class NotificationTests(unittest.TestCase):
         self.assertTrue(payload.success)
         self.assertEqual(payload.stage, CartAddStage.ADD_TO_CART.value)
         self.assertEqual(payload.details["cart_item_count"], 2)
-        self.assertIn("코카콜라 제로 355ml x 24 / 16,900원 / 2개", message)
-        self.assertIn("삼다수 2L x 6 / 6,900원 / 1개", message)
-        self.assertIn("요약: 총 2종, 3개, 40,700원 장바구니 담기 완료", message)
+        self.assertIn("<b>코카콜라 제로 355ml x 24</b>", message)
+        self.assertIn("16,900원 · 2개", message)
+        self.assertIn("<b>삼다수 2L x 6</b>", message)
+        self.assertIn("<b>요약</b>: 총 2종, 3개, 40,700원 장바구니 담기 완료", message)
 
     def test_success_message_keeps_current_cart_results_when_snapshot_context_is_provided(self) -> None:
         payload = build_success_notification_payload(
@@ -117,10 +122,11 @@ class NotificationTests(unittest.TestCase):
         message = format_notification_message(payload)
 
         self.assertEqual(payload.details["cart_item_count"], 1)
-        self.assertIn("방금 담은 양파 1kg / 2,620원 / 1개", message)
+        self.assertIn("<b>방금 담은 양파 1kg</b>", message)
+        self.assertIn("2,620원 · 1개", message)
         self.assertNotIn("오리온 미쯔블랙 시리얼", message)
-        self.assertIn("재구매 참고: 방금 담은 양파 1kg / 이전 구매 3회", message)
-        self.assertIn("요약: 총 1종, 1개, 2,620원 장바구니 담기 완료", message)
+        self.assertIn("<i>재구매 참고</i>: 방금 담은 양파 1kg · 이전 구매 3회", message)
+        self.assertIn("<b>요약</b>: 총 1종, 1개, 2,620원 장바구니 담기 완료", message)
 
     def test_failure_payload_and_message_include_stage_reason_and_detail(self) -> None:
         payload = build_failure_notification_payload(
@@ -135,10 +141,10 @@ class NotificationTests(unittest.TestCase):
         self.assertFalse(payload.success)
         self.assertEqual(payload.summary, "로그인 세션이 만료되었습니다.")
         self.assertEqual(payload.details["failure_reason"], "로그인 세션이 만료되었습니다.")
-        self.assertIn("단계: cart_add", message)
-        self.assertIn("원인: 로그인 세션이 만료되었습니다.", message)
+        self.assertIn("<b>단계</b>: <code>cart_add</code>", message)
+        self.assertIn("<b>원인</b>: 로그인 세션이 만료되었습니다.", message)
         self.assertIn(
-            "상세: 장바구니 담기 버튼을 누르기 전에 세션 검증에서 실패했습니다.",
+            "<b>상세</b>: 장바구니 담기 버튼을 누르기 전에 세션 검증에서 실패했습니다.",
             message,
         )
 
@@ -158,10 +164,29 @@ class NotificationTests(unittest.TestCase):
         message = format_notification_message(payload)
 
         self.assertEqual(payload.kind, "proposal")
-        self.assertIn("추천 상품을 찾았습니다.", message)
+        self.assertIn("<b>추천 상품을 찾았습니다.</b>", message)
         self.assertIn("곰곰 국내산 양파 500g", message)
-        self.assertIn("다른 거 보여줘", message)
+        self.assertIn("<code>다른 거 보여줘</code>", message)
         self.assertEqual(payload.details["photo"]["url"], "https://images.example.com/onion.jpg")
+
+    def test_proposal_caption_avoids_duplicate_option_and_uses_reason(self) -> None:
+        payload = build_proposal_notification_payload(
+            chat_id="telegram-chat",
+            summary="지금은 Coupang 상도가구 모니 1인용 좌식 소파가 추천됩니다.",
+            candidate={
+                "name": "상도가구 모니 1인용 좌식 소파, 오트밀, 1개",
+                "price_krw": 46450,
+                "option_summary": "상도가구 모니 1인용 좌식 소파, 오트밀, 1개",
+                "selection_reason": "평점 4.5, 리뷰 2,056개, 가격 46,450원을 기준으로 균형이 좋아 추천드립니다.",
+            },
+            image_url="https://images.example.com/sofa.jpg",
+        )
+
+        caption = payload.details["photo"]["caption"]
+
+        self.assertEqual(caption.count("상도가구 모니 1인용 좌식 소파, 오트밀, 1개"), 1)
+        self.assertNotIn("지금은 Coupang", caption)
+        self.assertIn("균형이 좋아 추천드립니다.", caption)
 
     def test_cancelled_payload_formats_plain_message(self) -> None:
         payload = build_cancelled_notification_payload(
@@ -187,8 +212,8 @@ class NotificationTests(unittest.TestCase):
 
         message = format_notification_message(payload, max_length=180)
 
-        self.assertIn("- 외 ", message)
-        self.assertIn("요약: 총 5종, 5개, 15,000원 장바구니 담기 완료", message)
+        self.assertIn("• 외 ", message)
+        self.assertIn("<b>요약</b>: 총 5종, 5개, 15,000원 장바구니 담기 완료", message)
         self.assertLessEqual(len(message), 180)
 
     def test_retrying_notification_service_retries_retryable_failures(self) -> None:
@@ -232,7 +257,7 @@ class NotificationTests(unittest.TestCase):
         calls: list[tuple[str, str]] = []
 
         class Adapter:
-            def send_message(self, *, chat_id: str, text: str) -> None:
+            def send_message(self, *, chat_id: str, text: str, parse_mode: str | None = None) -> None:
                 calls.append((chat_id, text))
 
         service = RetryingNotificationService(sender=Adapter(), formatter=NotificationFormatter())
@@ -244,17 +269,22 @@ class NotificationTests(unittest.TestCase):
 
         service.send(payload)
 
-        self.assertEqual(calls, [("telegram-chat", "장바구니 담기에 실패했습니다.\n단계: notify\n원인: 텔레그램 전송에 실패했습니다.")])
+        self.assertEqual(
+            calls,
+            [("telegram-chat", "<b>장바구니 담기에 실패했습니다.</b>\n<b>단계</b>: <code>notify</code>\n<b>원인</b>: 텔레그램 전송에 실패했습니다.")],
+        )
 
-    def test_retrying_notification_service_sends_photo_before_message_for_proposal(self) -> None:
+    def test_retrying_notification_service_sends_only_photo_for_proposal_when_photo_exists(self) -> None:
         deliveries: list[tuple[str, str, str | None]] = []
         messages: list[tuple[str, str]] = []
 
         class Adapter:
-            def send_photo(self, *, chat_id: str, photo: str, caption: str | None = None) -> None:
+            def send_photo(
+                self, *, chat_id: str, photo: str, caption: str | None = None, parse_mode: str | None = None
+            ) -> None:
                 deliveries.append((chat_id, photo, caption))
 
-            def send_message(self, *, chat_id: str, text: str) -> None:
+            def send_message(self, *, chat_id: str, text: str, parse_mode: str | None = None) -> None:
                 messages.append((chat_id, text))
 
         service = RetryingNotificationService(sender=Adapter(), formatter=NotificationFormatter())
@@ -275,13 +305,13 @@ class NotificationTests(unittest.TestCase):
         self.assertEqual(deliveries[0][0], "telegram-chat")
         self.assertEqual(deliveries[0][1], "https://images.example.com/onion.jpg")
         self.assertIn("곰곰 국내산 양파 500g", deliveries[0][2] or "")
-        self.assertIn("추천 상품을 찾았습니다.", messages[0][1])
+        self.assertEqual(messages, [])
 
     def test_telegram_send_message_sender_uses_bot_api_client(self) -> None:
         captured: list[tuple[str, str]] = []
 
         class FakeClient:
-            def send_message(self, *, chat_id: str, text: str) -> dict[str, object]:
+            def send_message(self, *, chat_id: str, text: str, parse_mode: str | None = None) -> dict[str, object]:
                 captured.append((chat_id, text))
                 return {"ok": True}
 
@@ -336,6 +366,73 @@ class NotificationTests(unittest.TestCase):
         self.assertEqual(context["cart_snapshot_items"][1]["line_total_krw"], 33800)
         self.assertEqual(len(context["prior_purchases"]), 1)
         self.assertEqual(context["prior_purchases"][0].product_id, "CP-1")
+
+
+class RemoveNotificationTests(unittest.TestCase):
+    def test_build_remove_notification_payload_success(self) -> None:
+        results = [
+            CartRemoveResult(
+                success=True,
+                product_name="양파",
+                stage=CartRemoveStage.REMOVE,
+                message="제거 완료",
+                cart_count_before=2,
+                cart_count_after=1,
+            )
+        ]
+        payload = build_remove_notification_payload(chat_id="c1", remove_results=results)
+        self.assertTrue(payload.success)
+        self.assertEqual(payload.kind, "remove_result")
+        self.assertIn("양파", payload.summary)
+        self.assertIn("제거", payload.summary)
+
+    def test_build_remove_notification_payload_failure(self) -> None:
+        results = [
+            CartRemoveResult(
+                success=False,
+                product_name="양파",
+                stage=CartRemoveStage.ITEM_LOCATE,
+                message="상품을 찾을 수 없습니다.",
+                failure_reason=CartRemoveFailureReason.ITEM_NOT_FOUND,
+            )
+        ]
+        payload = build_remove_notification_payload(chat_id="c1", remove_results=results)
+        self.assertFalse(payload.success)
+        self.assertIn("실패", payload.summary)
+
+    def test_format_remove_success_message(self) -> None:
+        results = [
+            CartRemoveResult(
+                success=True,
+                product_name="양파",
+                stage=CartRemoveStage.REMOVE,
+                message="제거 완료",
+            )
+        ]
+        payload = build_remove_notification_payload(chat_id="c1", remove_results=results)
+        formatter = NotificationFormatter()
+        message = formatter.format(payload)
+        self.assertIn("제거", message)
+        self.assertIn("양파", message)
+
+    def test_format_remove_failure_message(self) -> None:
+        results = [
+            CartRemoveResult(
+                success=False,
+                product_name="양파",
+                stage=CartRemoveStage.ITEM_LOCATE,
+                message="찾을 수 없음",
+                failure_reason=CartRemoveFailureReason.ITEM_NOT_FOUND,
+            )
+        ]
+        payload = build_remove_notification_payload(chat_id="c1", remove_results=results)
+        formatter = NotificationFormatter()
+        message = formatter.format(payload)
+        self.assertIn("실패", message)
+
+    def test_build_remove_notification_payload_raises_on_empty(self) -> None:
+        with self.assertRaises(ValueError):
+            build_remove_notification_payload(chat_id="c1", remove_results=[])
 
 
 if __name__ == "__main__":

@@ -8,7 +8,14 @@ from typing import Protocol, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-from .azure_openai import AgentPlan, AgentSearchQuery, AzureOpenAIPlanner
+from .azure_openai import (
+    AgentPlan,
+    AgentSearchQuery,
+    AzureOpenAIConversationInterpreter,
+    AzureOpenAIPlanner,
+    ConversationIntent,
+    _deterministic_conversation_summary,
+)
 from .cart_executor import (
     AccessDeniedError,
     LoginFailedError,
@@ -24,6 +31,8 @@ from .contracts import (
     CartAddFailureReason,
     CartAddResult,
     CartAddStage,
+    CartRemoveResult,
+    CartRemoveStage,
     IntakeMode,
     NotificationPayload,
     PriorPurchaseRecord,
@@ -40,11 +49,13 @@ from .live_browser_agent import CoupangLiveBrowserShoppingAgent
 from .notifications import (
     build_cancelled_notification_payload,
     build_failure_notification_payload,
+    build_price_assessment_notification_payload,
     build_proposal_notification_payload,
+    build_remove_notification_payload,
     build_success_notification_payload,
 )
 from .selection import HeuristicProductSelectionService, score_candidate, summarize_selection_reason
-from .services import CoupangCartService, NotificationService
+from .services import CoupangCartService, CoupangCartRemoveService, NotificationService
 
 
 class LiveWorkflowState(TypedDict, total=False):
@@ -58,6 +69,8 @@ class LiveWorkflowState(TypedDict, total=False):
     candidate_source_mode: str
     selections: list[dict[str, object]]
     cart_results: list[dict[str, object]]
+    cart_remove_results: list[dict[str, object]]
+    price_assessments: list[dict[str, object]]
     conversation_status: str
     user_decision: str | None
     pending_proposal: dict[str, object]
@@ -66,6 +79,8 @@ class LiveWorkflowState(TypedDict, total=False):
     last_observation: dict[str, object]
     notification_payload: dict[str, object]
     performance: dict[str, object]
+    conversation_summary: str
+    rewritten_queries: list[dict[str, str]]
     success: bool
     failed_stage: str | None
     failure_message: str | None
@@ -100,6 +115,7 @@ class OperationalStore(Protocol):
         conversation_status: str,
         user_decision: str | None,
         pending_proposal: dict[str, object] | None,
+        conversation_summary: str | None,
         success: bool,
         failed_stage: str | None,
         failure_message: str | None,
@@ -122,6 +138,7 @@ class InMemoryOperationalStore:
         self.prior_purchases_by_user: dict[str, list[PriorPurchaseRecord]] = {}
         self.recent_signals_by_thread: dict[str, list[SessionSelectionSignal]] = {}
         self.current_cart_snapshot_by_user: dict[str, list[dict[str, object]]] = {}
+        self.conversation_summaries: dict[str, str] = {}
         self.runs: list[dict[str, object]] = []
 
     def record_intake(self, *, thread_id: str, envelope: ShoppingRequestEnvelope) -> None:
@@ -152,7 +169,9 @@ class InMemoryOperationalStore:
         }
 
     def load_thread_context(self, *, thread_id: str) -> dict[str, object]:
-        return dict(self.thread_context_by_id.get(thread_id, {}))
+        context = dict(self.thread_context_by_id.get(thread_id, {}))
+        context["conversation_summary"] = self.conversation_summaries.get(thread_id, "")
+        return context
 
     def record_run(
         self,
@@ -170,6 +189,7 @@ class InMemoryOperationalStore:
         conversation_status: str,
         user_decision: str | None,
         pending_proposal: dict[str, object] | None,
+        conversation_summary: str | None,
         success: bool,
         failed_stage: str | None,
         failure_message: str | None,
@@ -179,6 +199,7 @@ class InMemoryOperationalStore:
             {
                 "thread_id": thread_id,
                 "request_id": envelope.request.request_id,
+                "request_envelope": asdict(envelope),
                 "success": success,
                 "failed_stage": failed_stage,
                 "failure_message": failure_message,
@@ -208,6 +229,8 @@ class InMemoryOperationalStore:
             "last_user_decision": user_decision,
             "updated_at": now,
         }
+        if conversation_summary is not None:
+            self.conversation_summaries[thread_id] = conversation_summary
         if conversation_status == "completed" and success:
             snapshot_items: list[dict[str, object]] = []
             for result in cart_results:
@@ -262,7 +285,10 @@ class CoupangCartAgentLiveWorkflow:
         notification_service: NotificationService,
         operational_store: OperationalStore,
         agent_planner: AzureOpenAIPlanner,
+        conversation_interpreter: AzureOpenAIConversationInterpreter | None = None,
         shopping_agent: CoupangLiveBrowserShoppingAgent | None = None,
+        cart_remove_service: CoupangCartRemoveService | None = None,
+        price_tracker: object | None = None,
         checkpointer=None,
     ) -> None:
         self._candidate_source = candidate_source
@@ -270,7 +296,10 @@ class CoupangCartAgentLiveWorkflow:
         self._notification_service = notification_service
         self._operational_store = operational_store
         self._agent_planner = agent_planner
+        self._conversation_interpreter = conversation_interpreter
         self._shopping_agent = shopping_agent
+        self._cart_remove_service = cart_remove_service
+        self._price_tracker = price_tracker
         self._graph = self._build_graph(checkpointer=checkpointer)
 
     def run_envelope(
@@ -289,6 +318,8 @@ class CoupangCartAgentLiveWorkflow:
                 "candidates_by_item": {},
                 "selections": [],
                 "cart_results": [],
+                "cart_remove_results": [],
+                "price_assessments": [],
                 "conversation_status": "received",
                 "user_decision": None,
                 "pending_proposal": {},
@@ -297,6 +328,8 @@ class CoupangCartAgentLiveWorkflow:
                 "last_observation": {},
                 "notification_payload": {},
                 "performance": {"timings_ms": {}, "counts": {}},
+                "conversation_summary": "",
+                "rewritten_queries": [],
                 "success": False,
                 "failed_stage": None,
                 "failure_message": None,
@@ -316,7 +349,9 @@ class CoupangCartAgentLiveWorkflow:
         graph.add_node("browser_shop", self._browser_shop_node)
         graph.add_node("load_candidates", self._load_candidates_node)
         graph.add_node("select_products", self._select_products_node)
+        graph.add_node("evaluate_price", self._evaluate_price_node)
         graph.add_node("add_to_cart", self._add_to_cart_node)
+        graph.add_node("remove_from_cart", self._remove_from_cart_node)
         graph.add_node("notify", self._notify_node)
         graph.add_node("persist", self._persist_node)
         graph.add_edge(START, "load_context")
@@ -324,8 +359,10 @@ class CoupangCartAgentLiveWorkflow:
         graph.add_edge("agent_plan", "browser_shop")
         graph.add_edge("browser_shop", "load_candidates")
         graph.add_edge("load_candidates", "select_products")
-        graph.add_edge("select_products", "add_to_cart")
-        graph.add_edge("add_to_cart", "notify")
+        graph.add_edge("select_products", "evaluate_price")
+        graph.add_edge("evaluate_price", "add_to_cart")
+        graph.add_edge("add_to_cart", "remove_from_cart")
+        graph.add_edge("remove_from_cart", "notify")
         graph.add_edge("notify", "persist")
         graph.add_edge("persist", END)
         return graph.compile(checkpointer=checkpointer)
@@ -343,10 +380,19 @@ class CoupangCartAgentLiveWorkflow:
             state.get("pending_proposal"),
             thread_context.get("active_proposal"),
         )
-        user_decision = _classify_user_decision(
+        interpreted = self._interpret_with_context(
             envelope=_envelope_from_dict(state["request_envelope"]),
             request=request,
+            thread_context=thread_context,
             has_pending_proposal=bool(pending_proposal),
+        )
+        user_decision = interpreted.decision
+        rewritten_queries = [
+            {"item_name": query.item_name, "query": query.query}
+            for query in interpreted.rewritten_queries
+        ]
+        conversation_summary = interpreted.conversation_summary or str(
+            thread_context.get("conversation_summary", "")
         )
         if user_decision == "confirm" and not pending_proposal:
             failed_stage = "confirmation"
@@ -364,6 +410,10 @@ class CoupangCartAgentLiveWorkflow:
             failed_stage = None
             failure_message = None
             conversation_status = "proposal_pending"
+        elif user_decision == "remove_request":
+            failed_stage = None
+            failure_message = None
+            conversation_status = "executing_cart_remove"
         elif user_decision == "confirm":
             failed_stage = None
             failure_message = None
@@ -383,7 +433,9 @@ class CoupangCartAgentLiveWorkflow:
             "candidate_source_mode": str(pending_proposal.get("candidate_source_mode") or state.get("candidate_source_mode") or ""),
             "user_decision": user_decision,
             "conversation_status": conversation_status,
-            "success": conversation_status in {"proposal_pending", "cancelled"},
+            "conversation_summary": conversation_summary,
+            "rewritten_queries": rewritten_queries,
+            "success": conversation_status in {"proposal_pending", "cancelled", "executing_cart_remove"},
             "failed_stage": failed_stage,
             "failure_message": failure_message,
             "performance": _updated_workflow_performance(
@@ -393,17 +445,61 @@ class CoupangCartAgentLiveWorkflow:
             ),
         }
 
+    def _interpret_with_context(
+        self,
+        *,
+        envelope: ShoppingRequestEnvelope,
+        request: ShoppingRequest,
+        thread_context: dict[str, object],
+        has_pending_proposal: bool,
+    ) -> ConversationIntent:
+        if self._conversation_interpreter is not None:
+            try:
+                interpreted = self._conversation_interpreter.classify(
+                    raw_text=request.raw_text,
+                    has_pending_proposal=has_pending_proposal,
+                    request_items=[asdict(item) for item in request.items],
+                    thread_context=thread_context,
+                )
+                if interpreted is not None:
+                    return interpreted
+            except Exception:
+                pass
+        # Fallback: rule-based classification when LLM is unavailable
+        decision = _classify_user_decision(
+            envelope=envelope,
+            request=request,
+            has_pending_proposal=has_pending_proposal,
+        )
+        return ConversationIntent(decision=decision)
+
     def _agent_plan_node(self, state: LiveWorkflowState) -> dict[str, object]:
         if state.get("failed_stage") or state.get("user_decision") != "new_request":
             return {}
         started = time.perf_counter()
         request = _shopping_request_from_dict(state["request"])
         selection_context = _selection_context_from_dict(state.get("selection_context", {}))
-        plan = self._agent_planner.plan_request(
-            request,
-            prior_purchases=selection_context.prior_purchases,
-            recent_session_signals=selection_context.recent_session_signals,
-        )
+
+        rewritten = state.get("rewritten_queries") or []
+        if rewritten:
+            plan = AgentPlan(
+                mode="context_rewrite",
+                search_queries=[
+                    AgentSearchQuery(
+                        item_name=str(raw_query.get("item_name", "")),
+                        query=str(raw_query.get("query", "")),
+                    )
+                    for raw_query in rewritten
+                ],
+                operator_note="Search queries rewritten from conversation context.",
+                selection_brief="Context-aware rewritten queries.",
+            )
+        else:
+            plan = self._agent_planner.plan_request(
+                request,
+                prior_purchases=selection_context.prior_purchases,
+                recent_session_signals=selection_context.recent_session_signals,
+            )
         return {
             "agent_plan": plan.as_dict(),
             "performance": _updated_workflow_performance(
@@ -527,8 +623,15 @@ class CoupangCartAgentLiveWorkflow:
             pending_proposal = _coerce_pending_proposal(state.get("pending_proposal"))
             if not pending_proposal:
                 return {}
-            next_index = int(pending_proposal.get("candidate_index", 0)) + 1
-            candidates = [dict(candidate) for candidate in pending_proposal.get("candidates", [])]
+            active_item_index = int(pending_proposal.get("active_item_index", 0))
+            item_proposals = [
+                dict(item_proposal)
+                for item_proposal in pending_proposal.get("item_proposals", [])
+                if isinstance(item_proposal, dict)
+            ]
+            current_item = dict(item_proposals[active_item_index]) if active_item_index < len(item_proposals) else {}
+            next_index = int(current_item.get("candidate_index", 0)) + 1
+            candidates = [dict(candidate) for candidate in current_item.get("candidates", [])]
             if next_index >= len(candidates):
                 return {
                     "conversation_status": "cancelled",
@@ -538,13 +641,20 @@ class CoupangCartAgentLiveWorkflow:
                 }
             selected_candidate = dict(candidates[next_index])
             selected_candidate["selection_reason"] = str(
-                selected_candidate.get("selection_reason") or pending_proposal.get("summary") or ""
+                selected_candidate.get("selection_reason") or current_item.get("summary") or ""
             )
-            updated_pending = dict(pending_proposal)
-            updated_pending["candidate_index"] = next_index
-            updated_pending["selected_candidate"] = selected_candidate
-            updated_pending["summary"] = _summarize_proposal(selected_candidate)
-            updated_pending["image_url"] = selected_candidate.get("image_url")
+            current_item["candidate_index"] = next_index
+            current_item["selected_candidate"] = selected_candidate
+            current_item["summary"] = _summarize_proposal(selected_candidate)
+            current_item["image_url"] = selected_candidate.get("image_url")
+            item_proposals[active_item_index] = current_item
+            updated_pending = _sync_pending_proposal(
+                {
+                    **pending_proposal,
+                    "item_proposals": item_proposals,
+                    "active_item_index": active_item_index,
+                }
+            )
             return {
                 "selections": [_selected_product_to_dict(_selected_product_from_candidate_dict(selected_candidate))],
                 "pending_proposal": updated_pending,
@@ -614,33 +724,174 @@ class CoupangCartAgentLiveWorkflow:
             }
 
         first_failure = next((result for result in results if not result.success), None)
+        if first_failure is not None:
+            recovered = _recover_pending_proposal_after_cart_failure(
+                pending_proposal=pending_proposal,
+                failed_result=first_failure,
+            )
+            if recovered is not None:
+                return {
+                    "cart_results": [],
+                    "selections": [
+                        _selected_product_to_dict(
+                            _selected_product_from_candidate_dict(dict(recovered["selected_candidate"]))
+                        )
+                    ],
+                    "pending_proposal": recovered,
+                    "performance": _updated_workflow_performance(
+                        state.get("performance"),
+                        stage="add_to_cart",
+                        elapsed_seconds=time.perf_counter() - started,
+                    ),
+                    "success": True,
+                    "conversation_status": "awaiting_user_confirmation",
+                    "failed_stage": first_failure.stage.value,
+                    "failure_message": first_failure.message,
+                }
         return {
-            "cart_results": [_cart_result_to_dict(result) for result in results],
-            "selections": [_selected_product_to_dict(selection) for selection in selections],
-            "pending_proposal": {} if first_failure is None else pending_proposal,
+            **_advance_after_success(
+                pending_proposal=pending_proposal,
+                results=results,
+                selections=selections,
+            ),
             "performance": _updated_workflow_performance(
                 state.get("performance"),
                 stage="add_to_cart",
                 elapsed_seconds=time.perf_counter() - started,
             ),
-            "success": first_failure is None,
-            "conversation_status": "completed" if first_failure is None else "awaiting_user_confirmation",
-            "failed_stage": None if first_failure is None else first_failure.stage.value,
-            "failure_message": None if first_failure is None else first_failure.message,
+            "success": True,
+            "failed_stage": None,
+            "failure_message": None,
+        }
+
+    def _remove_from_cart_node(self, state: LiveWorkflowState) -> dict[str, object]:
+        if state.get("user_decision") != "remove_request" or self._cart_remove_service is None:
+            return {}
+        request = _shopping_request_from_dict(state["request"])
+        product_names = [item.name for item in request.items]
+        if not product_names:
+            return {
+                "cart_remove_results": [],
+                "failed_stage": "cart_remove",
+                "failure_message": "제거할 상품명이 요청에 포함되지 않았습니다.",
+                "success": False,
+            }
+        started = time.perf_counter()
+        try:
+            results = self._cart_remove_service.remove_products(product_names)
+        except Exception as exc:
+            return {
+                "cart_remove_results": [],
+                "failed_stage": "cart_remove",
+                "failure_message": str(exc),
+                "success": False,
+                "performance": _updated_workflow_performance(
+                    state.get("performance"),
+                    stage="remove_from_cart",
+                    elapsed_seconds=time.perf_counter() - started,
+                ),
+            }
+        remove_dicts = [asdict(r) for r in results]
+        all_success = all(r.success for r in results)
+        first_failure = next((r for r in results if not r.success), None)
+        return {
+            "cart_remove_results": remove_dicts,
+            "conversation_status": "completed" if all_success else "awaiting_user_confirmation",
+            "success": all_success,
+            "failed_stage": None if all_success else (first_failure.stage.value if first_failure else "cart_remove"),
+            "failure_message": None if all_success else (first_failure.message if first_failure else ""),
+            "performance": _updated_workflow_performance(
+                state.get("performance"),
+                stage="remove_from_cart",
+                elapsed_seconds=time.perf_counter() - started,
+            ),
+        }
+
+    def _evaluate_price_node(self, state: LiveWorkflowState) -> dict[str, object]:
+        """Evaluate price comparison for the proposed/selected product."""
+        if self._price_tracker is None:
+            return {}
+        pending_proposal = _coerce_pending_proposal(state.get("pending_proposal"))
+        if not pending_proposal:
+            return {}
+        selected_candidate = pending_proposal.get("selected_candidate")
+        if not selected_candidate or not isinstance(selected_candidate, dict):
+            return {}
+        product_id = str(selected_candidate.get("product_id", ""))
+        product_name = str(selected_candidate.get("name", ""))
+        product_url = str(selected_candidate.get("product_url", ""))
+        if not product_name:
+            return {}
+        started = time.perf_counter()
+        from .price_judgment import PriceJudgmentEngine
+
+        engine = PriceJudgmentEngine()
+        assessments: list[dict[str, object]] = []
+        get_all = getattr(self._price_tracker, "get_all_price_histories", None)
+        if get_all is not None:
+            try:
+                histories = get_all(
+                    product_id=product_id,
+                    product_name=product_name,
+                    product_url=product_url,
+                )
+            except Exception:
+                histories = []
+        else:
+            try:
+                h = self._price_tracker.get_price_history(
+                    product_id=product_id,
+                    product_name=product_name,
+                    product_url=product_url,
+                )
+            except Exception:
+                h = None
+            histories = [h] if h else []
+        for history in histories:
+            assessment = engine.assess(history)
+            assessments.append({
+                "product_id": assessment.product_id,
+                "product_name": assessment.product_name,
+                "current_price_krw": assessment.current_price_krw,
+                "verdict": assessment.verdict.value,
+                "verdict_reason": assessment.verdict_reason,
+                "average_price_krw": assessment.average_price_krw,
+                "lowest_price_krw": assessment.lowest_price_krw,
+                "recent_low_30d_krw": assessment.recent_low_30d_krw,
+                "discount_pct_vs_avg": assessment.discount_pct_vs_avg,
+                "discount_pct_vs_recent_low": assessment.discount_pct_vs_recent_low,
+                "source": assessment.source,
+                "assessed_at": assessment.assessed_at.isoformat(),
+            })
+
+        return {
+            "price_assessments": assessments,
+            "performance": _updated_workflow_performance(
+                state.get("performance"),
+                stage="evaluate_price",
+                elapsed_seconds=time.perf_counter() - started,
+            ),
         }
 
     def _notify_node(self, state: LiveWorkflowState) -> dict[str, object]:
         started = time.perf_counter()
         request = _shopping_request_from_dict(state["request"])
         cart_results = [_cart_result_from_dict(raw) for raw in state.get("cart_results", [])]
+        cart_remove_results = state.get("cart_remove_results", [])
+        price_assessments = state.get("price_assessments", [])
         payload = None
 
-        if cart_results and any(not result.success for result in cart_results):
+        if cart_remove_results:
+            payload = _build_remove_notification_payload(
+                chat_id=request.chat_id,
+                remove_results=cart_remove_results,
+            )
+        elif cart_results and any(not result.success for result in cart_results):
             failure = next(result for result in cart_results if not result.success)
             failure_reason = (
                 "장바구니 담기에 실패했습니다."
                 if failure.failure_reason is None
-                else f"장바구니 담기에 실패했습니다: {failure.failure_reason.value}"
+                else f"장바구니 담기에 실패했습니다: {_format_failure_reason_label(failure.failure_reason)}"
             )
             payload = build_failure_notification_payload(
                 chat_id=request.chat_id,
@@ -666,6 +917,7 @@ class CoupangCartAgentLiveWorkflow:
                         if selected_candidate.get("image_url") in (None, "")
                         else str(selected_candidate.get("image_url"))
                     ),
+                    price_assessments=price_assessments or None,
                 )
         elif state.get("conversation_status") == "cancelled":
             payload = build_cancelled_notification_payload(
@@ -699,7 +951,7 @@ class CoupangCartAgentLiveWorkflow:
 
         try:
             self._notification_service.send(payload)
-            return {
+            result_dict: dict[str, object] = {
                 "notification_payload": _notification_payload_to_dict(payload),
                 "performance": _updated_workflow_performance(
                     state.get("performance"),
@@ -707,6 +959,7 @@ class CoupangCartAgentLiveWorkflow:
                     elapsed_seconds=time.perf_counter() - started,
                 ),
             }
+            return result_dict
         except Exception as exc:
             prior_failed_stage = state.get("failed_stage")
             prior_failure_message = state.get("failure_message")
@@ -744,6 +997,30 @@ class CoupangCartAgentLiveWorkflow:
             else _notification_payload_from_dict(state["notification_payload"])
         )
         agent_plan = None if "agent_plan" not in state else _agent_plan_from_dict(state["agent_plan"])
+
+        previous_summary = str(state.get("conversation_summary") or "")
+        current_run_snapshot = {
+            "raw_text": envelope.raw_text or envelope.request.raw_text,
+            "conversation_status": str(state.get("conversation_status", "received")),
+            "user_decision": state.get("user_decision"),
+            "failed_stage": state.get("failed_stage"),
+            "failure_message": state.get("failure_message"),
+        }
+        if self._conversation_interpreter is not None:
+            try:
+                conversation_summary = self._conversation_interpreter.summarize_conversation(
+                    previous_summary=previous_summary,
+                    current_run=current_run_snapshot,
+                )
+            except Exception:
+                conversation_summary = _deterministic_conversation_summary(
+                    previous_summary, current_run_snapshot
+                )
+        else:
+            conversation_summary = _deterministic_conversation_summary(
+                previous_summary, current_run_snapshot
+            )
+
         self._operational_store.record_run(
             thread_id=str(state["thread_id"]),
             envelope=envelope,
@@ -768,11 +1045,12 @@ class CoupangCartAgentLiveWorkflow:
             conversation_status=str(state.get("conversation_status", "received")),
             user_decision=(None if state.get("user_decision") is None else str(state.get("user_decision"))),
             pending_proposal=_coerce_pending_proposal(state.get("pending_proposal")),
+            conversation_summary=conversation_summary,
             success=bool(state.get("success", False)),
             failed_stage=state.get("failed_stage"),
             failure_message=state.get("failure_message"),
         )
-        return {}
+        return {"conversation_summary": conversation_summary}
 
 
 def _coerce_pending_proposal(*values: object) -> dict[str, object]:
@@ -791,6 +1069,8 @@ def _classify_user_decision(
     follow_up_reply = envelope.metadata.get("follow_up_reply")
     if follow_up_reply in {"confirm", "reject", "next", "cancel"}:
         return str(follow_up_reply)
+    if follow_up_reply == "remove":
+        return "remove_request"
     if request.items:
         return "new_request"
     if has_pending_proposal:
@@ -807,7 +1087,31 @@ def _build_pending_proposal(
 ) -> dict[str, object]:
     if not request.items:
         raise ValueError("추천안을 만들 상품 요청이 없습니다.")
-    requested_item = request.items[0]
+    item_proposals = [
+        _build_item_proposal(
+            requested_item=requested_item,
+            selection_context=selection_context,
+            candidate_source_mode=candidate_source_mode,
+            candidates_by_item=candidates_by_item,
+        )
+        for requested_item in request.items
+    ]
+    pending = {
+        "request_id": request.request_id,
+        "request_items": [asdict(item) for item in request.items],
+        "item_proposals": item_proposals,
+        "active_item_index": 0,
+    }
+    return _sync_pending_proposal(pending)
+
+
+def _build_item_proposal(
+    *,
+    requested_item,
+    selection_context: SelectionContext,
+    candidate_source_mode: str,
+    candidates_by_item: dict[str, list[ProductCandidate]],
+) -> dict[str, object]:
     candidates = candidates_by_item.get(requested_item.name, [])
     if len(candidates) < 1:
         raise ValueError(f"{requested_item.name}에 대한 후보 상품이 없습니다.")
@@ -843,7 +1147,6 @@ def _build_pending_proposal(
         )
     selected_candidate = dict(ranked_candidates[0])
     return {
-        "request_id": request.request_id,
         "request_item_name": requested_item.name,
         "candidate_source_mode": candidate_source_mode,
         "candidate_index": 0,
@@ -852,6 +1155,29 @@ def _build_pending_proposal(
         "summary": _summarize_proposal(selected_candidate),
         "image_url": selected_candidate.get("image_url"),
     }
+
+
+def _sync_pending_proposal(pending_proposal: dict[str, object]) -> dict[str, object]:
+    item_proposals = [
+        dict(item_proposal)
+        for item_proposal in pending_proposal.get("item_proposals", [])
+        if isinstance(item_proposal, dict)
+    ]
+    active_item_index = max(0, min(int(pending_proposal.get("active_item_index", 0)), len(item_proposals) - 1))
+    if not item_proposals:
+        return dict(pending_proposal)
+    active_item = dict(item_proposals[active_item_index])
+    updated = dict(pending_proposal)
+    updated["item_proposals"] = item_proposals
+    updated["active_item_index"] = active_item_index
+    updated["request_item_name"] = active_item.get("request_item_name", "")
+    updated["candidate_source_mode"] = active_item.get("candidate_source_mode", "")
+    updated["candidate_index"] = int(active_item.get("candidate_index", 0))
+    updated["selected_candidate"] = dict(active_item.get("selected_candidate", {}))
+    updated["candidates"] = [dict(candidate) for candidate in active_item.get("candidates", [])]
+    updated["summary"] = str(active_item.get("summary", ""))
+    updated["image_url"] = active_item.get("image_url")
+    return updated
 
 
 def _proposal_candidate_to_dict(
@@ -927,22 +1253,171 @@ def _extract_option_summary(candidate_name: str, *, requested_item_name: str) ->
     return normalized_candidate[:60]
 
 
+def _build_remove_notification_payload(
+    *,
+    chat_id: str,
+    remove_results: list[dict[str, object]],
+) -> NotificationPayload:
+    results = [
+        CartRemoveResult(
+            success=bool(r.get("success")),
+            product_name=str(r.get("product_name", "")),
+            stage=CartRemoveStage(r["stage"]) if isinstance(r.get("stage"), str) else CartRemoveStage.REMOVE,
+            message=str(r.get("message", "")),
+            failure_reason=r.get("failure_reason"),
+            cart_count_before=r.get("cart_count_before"),
+            cart_count_after=r.get("cart_count_after"),
+            evidence=r.get("evidence"),
+        )
+        for r in remove_results
+    ]
+    return build_remove_notification_payload(chat_id=chat_id, remove_results=results)
+
+
+def _format_failure_reason_label(reason: object) -> str:
+    value = str(reason)
+    labels = {
+        "login_failed": "로그인 실패",
+        "login_required": "로그인 필요",
+        "security_challenge": "보안 확인 필요",
+        "access_denied": "접근 거부",
+        "out_of_stock": "품절",
+        "option_mismatch": "옵션 불일치",
+        "ambiguity": "상품 선택 모호함",
+        "ui_element_not_found": "화면 요소를 찾지 못함",
+        "purchase_restricted": "구매 제한 상품",
+        "checkout_attempted": "결제 단계 진입 감지",
+        "verification_mismatch": "장바구니 검증 불일치",
+        "manual_review_required": "수동 확인 필요",
+        "unknown": "알 수 없는 오류",
+    }
+    return labels.get(value, value)
+
+
+def _recover_pending_proposal_after_cart_failure(
+    *,
+    pending_proposal: dict[str, object],
+    failed_result: CartAddResult,
+) -> dict[str, object] | None:
+    if not _should_retry_with_next_candidate(failed_result):
+        return None
+    active_item_index = int(pending_proposal.get("active_item_index", 0))
+    item_proposals = [
+        dict(item_proposal)
+        for item_proposal in pending_proposal.get("item_proposals", [])
+        if isinstance(item_proposal, dict)
+    ]
+    current_item = dict(item_proposals[active_item_index]) if active_item_index < len(item_proposals) else {}
+    candidates = [dict(candidate) for candidate in current_item.get("candidates", [])]
+    current_index = int(current_item.get("candidate_index", 0))
+    next_index = current_index + 1
+    if next_index >= len(candidates):
+        return None
+
+    selected_candidate = dict(candidates[next_index])
+    selected_candidate["selection_reason"] = _fallback_recommendation_reason(
+        failed_result=failed_result,
+        replacement_candidate=selected_candidate,
+    )
+
+    current_item["candidate_index"] = next_index
+    current_item["selected_candidate"] = selected_candidate
+    current_item["summary"] = _summarize_proposal(selected_candidate)
+    current_item["image_url"] = selected_candidate.get("image_url")
+    item_proposals[active_item_index] = current_item
+    return _sync_pending_proposal(
+        {
+            **pending_proposal,
+            "item_proposals": item_proposals,
+            "active_item_index": active_item_index,
+            "retry_reason": _format_failure_reason_label(failed_result.failure_reason or "unknown"),
+        }
+    )
+
+
+def _should_retry_with_next_candidate(result: CartAddResult) -> bool:
+    retryable_failure_reasons = {
+        CartAddFailureReason.OUT_OF_STOCK,
+        CartAddFailureReason.PURCHASE_RESTRICTED,
+        CartAddFailureReason.UI_ELEMENT_NOT_FOUND,
+        CartAddFailureReason.VERIFICATION_MISMATCH,
+        CartAddFailureReason.MANUAL_REVIEW_REQUIRED,
+    }
+    return result.failure_reason in retryable_failure_reasons
+
+
+def _fallback_recommendation_reason(
+    *,
+    failed_result: CartAddResult,
+    replacement_candidate: dict[str, object],
+) -> str:
+    replacement_name = str(replacement_candidate.get("name", "다음 후보 상품"))
+    reason = failed_result.failure_reason
+    if reason == CartAddFailureReason.PURCHASE_RESTRICTED:
+        return f"기존 추천 상품은 구매 제한으로 장바구니 담기가 어려워 {replacement_name}을(를) 차선책으로 추천합니다."
+    if reason == CartAddFailureReason.UI_ELEMENT_NOT_FOUND:
+        return f"기존 추천 상품은 장바구니 담기 버튼을 찾지 못해 {replacement_name}을(를) 차선책으로 추천합니다."
+    if reason == CartAddFailureReason.VERIFICATION_MISMATCH:
+        return f"기존 추천 상품은 장바구니 반영이 확인되지 않아 {replacement_name}을(를) 차선책으로 추천합니다."
+    if reason == CartAddFailureReason.MANUAL_REVIEW_REQUIRED:
+        return f"기존 추천 상품은 장바구니 반영 여부를 확정하기 어려워 {replacement_name}을(를) 차선책으로 추천합니다."
+    if reason == CartAddFailureReason.OUT_OF_STOCK:
+        return f"기존 추천 상품은 품절 또는 재고 이슈로 담기 어려워 {replacement_name}을(를) 차선책으로 추천합니다."
+    return f"기존 추천 상품 진행이 어려워 {replacement_name}을(를) 차선책으로 추천합니다."
+
+
 def _summarize_proposal(candidate: dict[str, object]) -> str:
     fragments: list[str] = []
+    selection_reason = str(candidate.get("selection_reason") or "").strip()
+    if selection_reason and "차선책" in selection_reason:
+        fragments.append(selection_reason)
     prior_purchase = candidate.get("prior_purchase")
     if isinstance(prior_purchase, dict) and prior_purchase.get("product_name"):
         fragments.append(
             f"이전에 {prior_purchase['product_name']}을 {int(prior_purchase.get('purchase_count', 1))}회 구매하셨고"
         )
-    vendor = str(candidate.get("vendor") or "").strip()
-    if vendor:
-        fragments.append(f"지금은 {vendor} {candidate['name']}이")
-    else:
-        fragments.append(f"지금은 {candidate['name']}이")
     fragments.append(
-        f"{format(int(candidate.get('price_krw', 0)), ',')}원, 평점 {float(candidate.get('rating', 0.0)):.1f}, 리뷰 {int(candidate.get('review_count', 0)):,}개로 균형이 좋아 추천드립니다."
+        f"평점 {float(candidate.get('rating', 0.0)):.1f}, 리뷰 {int(candidate.get('review_count', 0)):,}개, 가격 {format(int(candidate.get('price_krw', 0)), ',')}원을 기준으로 균형이 좋아 추천드립니다."
     )
     return " ".join(fragment for fragment in fragments if fragment)
+
+
+def _advance_after_success(
+    *,
+    pending_proposal: dict[str, object],
+    results: list[CartAddResult],
+    selections: list[SelectedProduct],
+) -> dict[str, object]:
+    active_item_index = int(pending_proposal.get("active_item_index", 0))
+    item_proposals = [
+        dict(item_proposal)
+        for item_proposal in pending_proposal.get("item_proposals", [])
+        if isinstance(item_proposal, dict)
+    ]
+    next_item_index = active_item_index + 1
+    if next_item_index >= len(item_proposals):
+        return {
+            "cart_results": [_cart_result_to_dict(result) for result in results],
+            "selections": [_selected_product_to_dict(selection) for selection in selections],
+            "pending_proposal": {},
+            "conversation_status": "completed",
+        }
+
+    next_pending = _sync_pending_proposal(
+        {
+            **pending_proposal,
+            "item_proposals": item_proposals,
+            "active_item_index": next_item_index,
+        }
+    )
+    completed_name = selections[0].candidate.name if selections else "이전 상품"
+    next_pending["summary"] = f"{completed_name} 담기를 완료했습니다. 다음 상품을 이어서 추천드립니다. {_summarize_proposal(dict(next_pending.get('selected_candidate', {})))}"
+    return {
+        "cart_results": [],
+        "selections": [_selected_product_to_dict(_selected_product_from_candidate_dict(dict(next_pending["selected_candidate"])))],
+        "pending_proposal": next_pending,
+        "conversation_status": "awaiting_user_confirmation",
+    }
 
 
 def _shopping_request_from_dict(raw: dict[str, object]) -> ShoppingRequest:

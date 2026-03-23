@@ -13,12 +13,15 @@ from .azure_openai import AgentPlan
 from .contracts import (
     CartAddResult,
     NotificationPayload,
+    PriceAssessment,
+    PriceVerdict,
     PriorPurchaseRecord,
     RequestSession,
     SelectionContext,
     SessionSelectionSignal,
     SelectedProduct,
     ShoppingRequestEnvelope,
+    TrackedProduct,
 )
 
 
@@ -55,6 +58,7 @@ class PostgresOperationalStore:
                         last_request_id TEXT,
                         last_status TEXT NOT NULL DEFAULT 'received',
                         last_failure_stage TEXT,
+                        conversation_summary TEXT NOT NULL DEFAULT '',
                         updated_at TIMESTAMPTZ NOT NULL,
                         metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb
                     )
@@ -130,6 +134,12 @@ class PostgresOperationalStore:
                 )
                 self._ensure_column(
                     cursor,
+                    table_name="workflow_threads",
+                    column_name="conversation_summary",
+                    ddl="ALTER TABLE workflow_threads ADD COLUMN conversation_summary TEXT NOT NULL DEFAULT ''",
+                )
+                self._ensure_column(
+                    cursor,
                     table_name="workflow_runs",
                     column_name="agent_reasoning_summary",
                     ddl="ALTER TABLE workflow_runs ADD COLUMN agent_reasoning_summary TEXT",
@@ -169,6 +179,45 @@ class PostgresOperationalStore:
                     table_name="workflow_runs",
                     column_name="proposal_state_json",
                     ddl="ALTER TABLE workflow_runs ADD COLUMN proposal_state_json JSONB",
+                )
+                # Price tracking tables
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS price_tracking_targets (
+                        id BIGSERIAL PRIMARY KEY,
+                        user_id TEXT NOT NULL,
+                        chat_id TEXT NOT NULL,
+                        product_id TEXT NOT NULL,
+                        product_name TEXT NOT NULL,
+                        product_url TEXT NOT NULL DEFAULT '',
+                        purchase_price_krw INTEGER NOT NULL,
+                        last_verdict TEXT,
+                        last_assessed_at TIMESTAMPTZ,
+                        registered_at TIMESTAMPTZ NOT NULL,
+                        active BOOLEAN NOT NULL DEFAULT TRUE,
+                        UNIQUE (user_id, product_id)
+                    )
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS price_assessments (
+                        id BIGSERIAL PRIMARY KEY,
+                        user_id TEXT NOT NULL,
+                        product_id TEXT NOT NULL,
+                        product_name TEXT NOT NULL,
+                        current_price_krw INTEGER NOT NULL,
+                        verdict TEXT NOT NULL,
+                        verdict_reason TEXT NOT NULL DEFAULT '',
+                        average_price_krw INTEGER NOT NULL,
+                        lowest_price_krw INTEGER NOT NULL,
+                        recent_low_30d_krw INTEGER,
+                        discount_pct_vs_avg DOUBLE PRECISION NOT NULL DEFAULT 0,
+                        discount_pct_vs_recent_low DOUBLE PRECISION,
+                        source TEXT NOT NULL DEFAULT '',
+                        assessed_at TIMESTAMPTZ NOT NULL
+                    )
+                    """
                 )
             connection.commit()
 
@@ -314,7 +363,8 @@ class PostgresOperationalStore:
         with psycopg.connect(self._dsn, row_factory=dict_row) as connection:
             row = connection.execute(
                 """
-                SELECT thread_id, user_id, chat_id, session_id, last_request_id, last_status, last_failure_stage, updated_at, metadata_json
+                SELECT thread_id, user_id, chat_id, session_id, last_request_id, last_status,
+                       last_failure_stage, conversation_summary, updated_at, metadata_json
                 FROM workflow_threads
                 WHERE thread_id = %s
                 """,
@@ -330,6 +380,7 @@ class PostgresOperationalStore:
             "last_request_id": row["last_request_id"],
             "last_status": str(row["last_status"]),
             "last_failure_stage": row["last_failure_stage"],
+            "conversation_summary": str(row.get("conversation_summary") or ""),
             "updated_at": _parse_timestamp(row["updated_at"]).isoformat(),
             "active_proposal": (
                 None
@@ -359,6 +410,7 @@ class PostgresOperationalStore:
         conversation_status: str,
         user_decision: str | None,
         pending_proposal: dict[str, object] | None,
+        conversation_summary: str | None,
         success: bool,
         failed_stage: str | None,
         failure_message: str | None,
@@ -375,6 +427,7 @@ class PostgresOperationalStore:
                         last_request_id = %s,
                         last_status = %s,
                         last_failure_stage = %s,
+                        conversation_summary = %s,
                         updated_at = %s,
                         metadata_json = metadata_json || %s
                     WHERE thread_id = %s
@@ -386,6 +439,7 @@ class PostgresOperationalStore:
                         envelope.request.request_id,
                         conversation_status if success else "failed",
                         failed_stage,
+                        conversation_summary or "",
                         now,
                         Jsonb(
                             _json_ready(
@@ -574,6 +628,141 @@ class PostgresOperationalStore:
         )
         if cursor.fetchone() is None:
             cursor.execute(ddl)
+
+    # ------------------------------------------------------------------
+    # Price tracking persistence
+    # ------------------------------------------------------------------
+
+    def register_price_tracking_target(self, target: TrackedProduct) -> None:
+        with psycopg.connect(self._dsn) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO price_tracking_targets (
+                        user_id, chat_id, product_id, product_name, product_url,
+                        purchase_price_krw, last_verdict, last_assessed_at,
+                        registered_at, active
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (user_id, product_id) DO UPDATE SET
+                        chat_id = EXCLUDED.chat_id,
+                        product_name = EXCLUDED.product_name,
+                        product_url = EXCLUDED.product_url,
+                        purchase_price_krw = EXCLUDED.purchase_price_krw,
+                        registered_at = EXCLUDED.registered_at,
+                        active = TRUE
+                    """,
+                    (
+                        target.user_id,
+                        target.chat_id,
+                        target.product_id,
+                        target.product_name,
+                        target.product_url,
+                        target.purchase_price_krw,
+                        target.last_verdict.value if target.last_verdict else None,
+                        target.last_assessed_at,
+                        target.registered_at,
+                        target.active,
+                    ),
+                )
+            connection.commit()
+
+    def load_active_tracking_targets(self) -> list[TrackedProduct]:
+        with psycopg.connect(self._dsn, row_factory=dict_row) as connection:
+            rows = connection.execute(
+                """
+                SELECT user_id, chat_id, product_id, product_name, product_url,
+                       purchase_price_krw, last_verdict, last_assessed_at,
+                       registered_at, active
+                FROM price_tracking_targets
+                WHERE active = TRUE
+                ORDER BY registered_at ASC
+                """
+            ).fetchall()
+        return [
+            TrackedProduct(
+                user_id=str(row["user_id"]),
+                chat_id=str(row["chat_id"]),
+                product_id=str(row["product_id"]),
+                product_name=str(row["product_name"]),
+                product_url=str(row.get("product_url") or ""),
+                purchase_price_krw=int(row["purchase_price_krw"]),
+                last_verdict=(
+                    PriceVerdict(row["last_verdict"]) if row.get("last_verdict") else None
+                ),
+                last_assessed_at=_parse_timestamp(row.get("last_assessed_at")),
+                registered_at=_parse_timestamp(row["registered_at"]) or datetime.now(UTC),
+                active=bool(row["active"]),
+            )
+            for row in rows
+        ]
+
+    def update_tracking_verdict(
+        self,
+        *,
+        user_id: str,
+        product_id: str,
+        verdict: PriceVerdict,
+        assessed_at: datetime,
+    ) -> None:
+        with psycopg.connect(self._dsn) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE price_tracking_targets
+                    SET last_verdict = %s, last_assessed_at = %s
+                    WHERE user_id = %s AND product_id = %s
+                    """,
+                    (verdict.value, assessed_at, user_id, product_id),
+                )
+            connection.commit()
+
+    def record_price_assessment(
+        self,
+        *,
+        user_id: str,
+        assessment: PriceAssessment,
+    ) -> None:
+        with psycopg.connect(self._dsn) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO price_assessments (
+                        user_id, product_id, product_name, current_price_krw,
+                        verdict, verdict_reason, average_price_krw, lowest_price_krw,
+                        recent_low_30d_krw, discount_pct_vs_avg, discount_pct_vs_recent_low,
+                        source, assessed_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        user_id,
+                        assessment.product_id,
+                        assessment.product_name,
+                        assessment.current_price_krw,
+                        assessment.verdict.value,
+                        assessment.verdict_reason,
+                        assessment.average_price_krw,
+                        assessment.lowest_price_krw,
+                        assessment.recent_low_30d_krw,
+                        assessment.discount_pct_vs_avg,
+                        assessment.discount_pct_vs_recent_low,
+                        assessment.source,
+                        assessment.assessed_at,
+                    ),
+                )
+            connection.commit()
+
+    def deactivate_tracking_target(self, *, user_id: str, product_id: str) -> None:
+        with psycopg.connect(self._dsn) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE price_tracking_targets
+                    SET active = FALSE
+                    WHERE user_id = %s AND product_id = %s
+                    """,
+                    (user_id, product_id),
+                )
+            connection.commit()
 
 
 def _json_ready(value: object) -> object:

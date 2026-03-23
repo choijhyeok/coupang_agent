@@ -89,7 +89,7 @@ class DeterministicCartVerifier:
             return CartVerificationDecision(
                 success=True,
                 failure_reason=None,
-                reason="Observed cart contents semantically match the requested product.",
+                reason="장바구니 내용이 요청한 상품과 일치하는 것으로 확인되었습니다.",
                 matched_item_name=best_item.name,
                 evidence={
                     "verification_method": "deterministic",
@@ -120,7 +120,7 @@ class DeterministicCartVerifier:
                 return CartVerificationDecision(
                     success=True,
                     failure_reason=None,
-                    reason="Observed cart page text and visual evidence match the requested product.",
+                    reason="장바구니 페이지 텍스트와 화면 증거가 요청한 상품과 일치합니다.",
                     matched_item_name=selection.candidate.name,
                     evidence={
                         "verification_method": "deterministic",
@@ -137,8 +137,8 @@ class DeterministicCartVerifier:
                 success=False,
                 failure_reason=CartAddFailureReason.VERIFICATION_MISMATCH,
                 reason=(
-                    f"Cart verification found a different item in cart: {best_item.name} "
-                    f"(expected {selection.request_item_name})."
+                    f"장바구니에서 다른 상품이 확인되었습니다: {best_item.name} "
+                    f"(기대 상품: {selection.request_item_name})."
                 ),
                 matched_item_name=best_item.name,
                 evidence={
@@ -156,8 +156,8 @@ class DeterministicCartVerifier:
             success=False,
             failure_reason=CartAddFailureReason.MANUAL_REVIEW_REQUIRED,
             reason=(
-                "Cart verification evidence was insufficient to confirm the requested item in cart. "
-                "Returning review-needed instead of false success."
+                "장바구니에 요청한 상품이 담겼는지 확정할 증거가 부족합니다. "
+                "오탐 성공 처리 대신 확인 필요 상태로 반환합니다."
             ),
             evidence={
                 "verification_method": "deterministic",
@@ -399,7 +399,6 @@ def _cart_item_overlap(
         item.name,
         item.option_summary or "",
         item.package_summary or "",
-        item.quantity_text or "",
     )
     return len(requested_tokens & item_tokens), len(candidate_tokens & item_tokens)
 
@@ -471,8 +470,8 @@ def _minimum_requested_overlap(tokens: set[str]) -> int:
 def _extract_quantity_text(text: str) -> int | None:
     patterns = (
         r"수량[^0-9]{0,10}(\d+)",
-        r"(\d+)\s*개",
-        r"(\d+)\s*입",
+        r"수량변경[^0-9]{0,10}(\d+)",
+        r"수량[^0-9]{0,6}[+-]?\s*(\d+)",
     )
     for pattern in patterns:
         match = re.search(pattern, text)

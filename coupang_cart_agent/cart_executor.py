@@ -11,6 +11,9 @@ from .contracts import (
     CartAddFailureReason,
     CartAddResult,
     CartAddStage,
+    CartRemoveFailureReason,
+    CartRemoveResult,
+    CartRemoveStage,
     SelectedProduct,
 )
 
@@ -75,6 +78,8 @@ class CoupangCartPage(Protocol):
     def checkout_started(self) -> bool: ...
 
     def observe_cart_verification(self) -> BrowserObservation: ...
+
+    def remove_from_cart(self, product_name: str) -> bool: ...
 
 
 @dataclass(slots=True)
@@ -326,3 +331,76 @@ class CoupangCartExecutor:
         if self._result_store is None:
             return
         self._result_store.save(build_cart_result_record(result))
+
+
+class CoupangCartRemoveExecutor:
+    """Executor that removes items from the Coupang cart by product name."""
+
+    def __init__(
+        self,
+        *,
+        page: CoupangCartPage,
+        credentials: SessionCredentials | None = None,
+    ) -> None:
+        self._page = page
+        self._credentials = credentials
+
+    def remove_products(self, product_names: list[str]) -> list[CartRemoveResult]:
+        return [self._remove_single(name) for name in product_names]
+
+    def _remove_single(self, product_name: str) -> CartRemoveResult:
+        stage = CartRemoveStage.SESSION
+        try:
+            self._page.attach_to_logged_in_session(self._credentials)
+            self._page.assert_logged_in()
+
+            stage = CartRemoveStage.CART_PAGE
+            before = self._page.cart_snapshot()
+
+            stage = CartRemoveStage.ITEM_LOCATE
+            stage = CartRemoveStage.REMOVE
+            removed = self._page.remove_from_cart(product_name)
+            if not removed:
+                return CartRemoveResult(
+                    success=False,
+                    product_name=product_name,
+                    stage=CartRemoveStage.ITEM_LOCATE,
+                    message=f"장바구니에서 '{product_name}'을(를) 찾을 수 없습니다.",
+                    failure_reason=CartRemoveFailureReason.ITEM_NOT_FOUND,
+                    cart_count_before=before.item_count,
+                )
+
+            stage = CartRemoveStage.VERIFICATION
+            after = self._page.cart_snapshot()
+            return CartRemoveResult(
+                success=True,
+                product_name=product_name,
+                stage=stage,
+                message=f"'{product_name}'을(를) 장바구니에서 제거했습니다.",
+                cart_count_before=before.item_count,
+                cart_count_after=after.item_count,
+            )
+        except LoginRequiredError as exc:
+            return CartRemoveResult(
+                success=False,
+                product_name=product_name,
+                stage=stage,
+                message=str(exc),
+                failure_reason=CartRemoveFailureReason.LOGIN_REQUIRED,
+            )
+        except SecurityChallengeError as exc:
+            return CartRemoveResult(
+                success=False,
+                product_name=product_name,
+                stage=stage,
+                message=str(exc),
+                failure_reason=CartRemoveFailureReason.SECURITY_CHALLENGE,
+            )
+        except Exception as exc:
+            return CartRemoveResult(
+                success=False,
+                product_name=product_name,
+                stage=stage,
+                message=f"장바구니 제거 중 오류: {exc}",
+                failure_reason=CartRemoveFailureReason.UNKNOWN,
+            )

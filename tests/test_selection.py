@@ -43,8 +43,8 @@ class SelectionTests(unittest.TestCase):
 
         self.assertEqual(selected.candidate.product_id, "balanced")
         self.assertEqual(selected.quantity, 2)
-        self.assertIn("rating 4.8/5", selected.selection_reason)
-        self.assertIn("3,200 reviews", selected.selection_reason)
+        self.assertIn("평점 4.8/5", selected.selection_reason)
+        self.assertIn("리뷰 3,200개", selected.selection_reason)
 
     def test_select_best_product_does_not_always_choose_the_cheapest_item(self) -> None:
         requested_item = RequestedItem(name="생수 2L")
@@ -122,7 +122,7 @@ class SelectionTests(unittest.TestCase):
         )
 
         self.assertEqual(selected.candidate.product_id, "right-brand-1pack")
-        self.assertIn("Matched explicit request constraints", selected.selection_reason)
+        self.assertIn("요청 조건 반영", selected.selection_reason)
 
     def test_select_best_product_fails_safely_when_only_pack_mismatches_exist(self) -> None:
         requested_item = RequestedItem(
@@ -244,7 +244,7 @@ class SelectionTests(unittest.TestCase):
         )
 
         self.assertEqual(selections[0].candidate.product_id, "trusted-repeat")
-        self.assertIn("repeat purchase signal", selections[0].selection_reason)
+        self.assertIn("이전 구매 이력 2회", selections[0].selection_reason)
 
     def test_captured_fixture_source_supports_production_shaped_candidates(self) -> None:
         request = ShoppingRequest(
@@ -262,7 +262,7 @@ class SelectionTests(unittest.TestCase):
 
         self.assertEqual(len(candidates_by_item["양파"]), 3)
         self.assertEqual(selections[0].candidate.product_id, "5438108496:양파")
-        self.assertIn("98,214 reviews", selections[0].selection_reason)
+        self.assertIn("리뷰 98,214개", selections[0].selection_reason)
 
     def test_sqlite_context_store_reads_prior_purchase_and_session_tables(self) -> None:
         request = ShoppingRequest(
@@ -292,7 +292,7 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(len(context.prior_purchases), 1)
         self.assertEqual(len(context.recent_session_signals), 1)
         self.assertEqual(selected.candidate.product_id, "repeat-choice")
-        self.assertIn("repeat purchase signal", selected.selection_reason)
+        self.assertIn("이전 구매 이력 3회", selected.selection_reason)
 
     @staticmethod
     def _create_context_database(database_path: Path) -> None:

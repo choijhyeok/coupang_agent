@@ -145,8 +145,9 @@ class IntegrationFlowTests(unittest.TestCase):
         self.assertTrue(result.notification_payload.success)
         self.assertEqual(len(delivered_messages), 1)
         self.assertEqual(delivered_messages[0][0], "demo-chat")
-        self.assertIn("장바구니 담기를 완료했습니다.", delivered_messages[0][1])
-        self.assertIn("콜라 제로 추천 / 8,900원 / 2개", delivered_messages[0][1])
+        self.assertIn("<b>장바구니 담기를 완료했습니다.</b>", delivered_messages[0][1])
+        self.assertIn("<b>콜라 제로 추천</b>", delivered_messages[0][1])
+        self.assertIn("8,900원 · 2개", delivered_messages[0][1])
 
     def test_run_text_request_reports_cart_failure_and_notifies_user(self) -> None:
         flow, delivered_messages = self.build_flow(
@@ -164,8 +165,8 @@ class IntegrationFlowTests(unittest.TestCase):
         self.assertEqual(result.cart_results, [])
         self.assertFalse(result.notification_payload.success)
         self.assertEqual(len(delivered_messages), 1)
-        self.assertIn("장바구니 담기에 실패했습니다.", delivered_messages[0][1])
-        self.assertIn("단계: selection", delivered_messages[0][1])
+        self.assertIn("<b>장바구니 담기에 실패했습니다.</b>", delivered_messages[0][1])
+        self.assertIn("<b>단계</b>: <code>selection</code>", delivered_messages[0][1])
         self.assertIn("explicit request constraints", delivered_messages[0][1])
 
 
